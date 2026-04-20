@@ -1,10 +1,6 @@
 ﻿using HarmonyLib;
 using System;
 using System.Collections.Generic;
-using System.Linq;
-using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
 using UnityEngine;
 
 namespace G3MagnetBoots
@@ -105,21 +101,29 @@ namespace G3MagnetBoots
         internal static readonly AccessTools.FieldRef<KerbalEVA, FixedJoint> _anchorJoint =
             AccessTools.FieldRefAccess<KerbalEVA, FixedJoint>("anchorJoint");
 
+        //isHelmetEnabled
+        internal static readonly AccessTools.FieldRef<KerbalEVA, bool> _isHelmetEnabled =
+            AccessTools.FieldRefAccess<KerbalEVA, bool>("isHelmetEnabled");
+
         //HasWeldLineOfSight()
-        internal static bool HasWeldLineOfSight(KerbalEVA eva)
-        {
-            var method = AccessTools.Method(typeof(KerbalEVA), "HasWeldLineOfSight", Type.EmptyTypes);
-            var func = AccessTools.MethodDelegate<Func<KerbalEVA, bool>>(method);
-            return func(eva);
-        }
+        internal static readonly Lazy<Func<KerbalEVA, bool>> _hasWeldLineOfSight =
+            new Lazy<Func<KerbalEVA, bool>>(() => AccessTools.MethodDelegate<Func<KerbalEVA, bool>>(AccessTools.Method(typeof(KerbalEVA), "HasWeldLineOfSight", Type.EmptyTypes)));
+        internal static bool HasWeldLineOfSight(KerbalEVA eva) => _hasWeldLineOfSight.Value(eva);
 
         //SurfaceContact()
-        internal static bool SurfaceContact(KerbalEVA eva)
-        {
-            var method = AccessTools.Method(typeof(KerbalEVA), "SurfaceContact", Type.EmptyTypes);
-            var func = AccessTools.MethodDelegate<Func<KerbalEVA, bool>>(method);
-            return func(eva);
-        }
+        internal static readonly Lazy<Func<KerbalEVA, bool>> _surfaceContact =
+            new Lazy<Func<KerbalEVA, bool>>(() => AccessTools.MethodDelegate<Func<KerbalEVA, bool>>(AccessTools.Method(typeof(KerbalEVA), "SurfaceContact", Type.EmptyTypes)));
+        internal static bool SurfaceContact(KerbalEVA eva) => _surfaceContact.Value(eva);
+
+        //playing_Golf_OnEnter
+        internal static readonly Lazy<Action<KerbalEVA>> _playing_Golf_OnEnter =
+            new Lazy<Action<KerbalEVA>>(() => AccessTools.MethodDelegate<Action<KerbalEVA>>(AccessTools.Method(typeof(KerbalEVA), "playing_Golf_OnEnter", Type.EmptyTypes)));
+        internal static void playing_Golf_OnEnter(KerbalEVA eva) => _playing_Golf_OnEnter.Value(eva);
+
+        //FinishedPlayingGolf
+        internal static readonly Lazy<Action<KerbalEVA>> _finishedPlayingGolf =
+            new Lazy<Action<KerbalEVA>>(() => AccessTools.MethodDelegate<Action<KerbalEVA>>(AccessTools.Method(typeof(KerbalEVA), "FinishedPlayingGolf", Type.EmptyTypes)));
+        internal static void FinishedPlayingGolf(KerbalEVA eva) => _finishedPlayingGolf.Value(eva);
 
         internal static ref float CurrentSpd(KerbalEVA eva) => ref _currentSpd(eva);
         internal static ref float LastTgtSpeed(KerbalEVA eva) => ref _lastTgtSpeed(eva);
@@ -135,6 +139,16 @@ namespace G3MagnetBoots
         internal static ref List<Collider> CurrentLadderTriggers(KerbalEVA eva) => ref _currentLadderTriggers(eva);
         internal static ref Vector3 PackLinear(KerbalEVA eva) => ref _packLinear(eva);
         internal static ref Vector3 PackTgtRPos(KerbalEVA eva) => ref _packTgtRPos(eva);
+        internal static readonly Action<KerbalEVA> _updatePackFuel = AccessTools.MethodDelegate<Action<KerbalEVA>>(AccessTools.Method(typeof(KerbalEVA), "UpdatePackFuel", Type.EmptyTypes));
+        internal static void UpdatePackFuel(KerbalEVA eva) { _updatePackFuel(eva); }
+
+        internal static readonly AccessTools.FieldRef<KerbalEVA, float> _linFXLatch =
+            AccessTools.FieldRefAccess<KerbalEVA, float>("linFXLatch");
+
+        internal static readonly Action<KerbalEVA, bool> _toggleJetpack =
+            AccessTools.MethodDelegate<Action<KerbalEVA, bool>>(AccessTools.Method(typeof(KerbalEVA), "ToggleJetpack", new[] { typeof(bool) }));
+        internal static void ToggleJetpack(KerbalEVA eva, bool packState) => _toggleJetpack(eva, packState);
+
         internal static ref float FuelFlowRate(KerbalEVA eva) => ref _fuelFlowRate(eva);
         internal static ref bool WasVisorEnabledBeforeWelding(KerbalEVA eva) => ref _wasVisorEnabledBeforeWelding(eva);
         internal static ref KerbalEVA.VisorStates VisorState(KerbalEVA eva) => ref _visorState(eva);
@@ -143,5 +157,21 @@ namespace G3MagnetBoots
         internal static ref float KerbalAnchorTimeThreshold(KerbalEVA eva) => ref _kerbalAnchorTimeThreshold(eva);
         internal static ref float KerbalAnchorTimeCounter(KerbalEVA eva) => ref _kerbalAnchorTimeCounter(eva);
         internal static ref FixedJoint AnchorJoint(KerbalEVA eva) => ref _anchorJoint(eva);
+        internal static ref bool IsHelmetEnabled(KerbalEVA eva) => ref _isHelmetEnabled(eva);
+
+        // protected Vector3 flagSpot
+        internal static readonly AccessTools.FieldRef<KerbalEVA, Vector3> _flagSpot =
+            AccessTools.FieldRefAccess<KerbalEVA, Vector3>("flagSpot");
+        internal static ref Vector3 FlagSpot(KerbalEVA eva) => ref _flagSpot(eva);
+
+        // protected FlagSite flag
+        internal static readonly AccessTools.FieldRef<KerbalEVA, FlagSite> _flag =
+            AccessTools.FieldRefAccess<KerbalEVA, FlagSite>("flag");
+        internal static ref FlagSite Flag(KerbalEVA eva) => ref _flag(eva);
+
+        internal static readonly AccessTools.FieldRef<KerbalEVA, Part> _constructionTarget =
+            AccessTools.FieldRefAccess<KerbalEVA, Part>("constructionTarget");
+
+        public static Part ConstructionTarget(KerbalEVA eva) => _constructionTarget(eva);
     }
 }

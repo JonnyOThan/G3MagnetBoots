@@ -42,23 +42,31 @@
       <HintPath>..\..\..\..\Documents\G3MagnetBoots KSP\GameData\000_Harmony\0Harmony.dll</HintPath>
     </Reference>
     <Reference Include="UnityEngine">
-      <HintPath>..\..\..\..\..\..\Program Files (x86)\Steam\steamapps\common\Kerbal Space Program\KSP_x64_Data\Managed\UnityEngine.dll</HintPath>
+      <HintPath>..\..\..\..\Documents\AutoKSP3\KSP_x64_Data\Managed\UnityEngine.dll</HintPath>
     </Reference>
   </ItemGroup>
   <ItemGroup>
     <Compile Include="EVACameraPatch.cs" />
+    <Compile Include="VesselUtils.cs" />
     <Compile Include="G3MagnetBoots.cs" />
     <Compile Include="G3MagnetBootsSettings.cs" />
+    <Compile Include="Modules\ModuleG3MagnetBoots_UI.cs" />
+    <Compile Include="Modules\ModuleG3NoAttach.cs" />
     <Compile Include="HarmonyLoader.cs" />
     <Compile Include="HullTargeting.cs" />
     <Compile Include="KerbalEVAAccess.cs" />
     <Compile Include="Logger.cs" />
-    <Compile Include="G3MagnetBootsModule.cs" />
+    <Compile Include="Modules\ModuleG3MagnetBoots.cs" />
+    <Compile Include="Modules\ModuleG3VelocityMatch.cs" />
+    <Compile Include="Modules\ModuleG3VelocityMatch_UI.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include=".github\copilot-instructions.md" />
+    <None Include="GameData\G3MagnetBoots\Science\G3MagnetBoots_Science.cfg" />
     <None Include="GameData\G3MagnetBoots\Patches\G3MagnetBoots_KerbalEVA.cfg" />
+    <None Include="GameData\G3MagnetBoots\Patches\G3MagnetBoots_Upgrade.cfg" />
+    <None Include="GameData\G3MagnetBoots\Patches\G3NoAttach_Blacklist.cfg" />
     <None Include="packages.config" />
   </ItemGroup>
   <ItemGroup>
@@ -68,7 +76,7 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <PropertyGroup>
-    <PostBuildEvent>set "KSPDIR=C:\Users\Aiden\Documents\G3MagnetBoots KSP\GameData\G3MagnetBoots"
+    <PostBuildEvent>set "KSPDIR=C:\Users\Aiden\Documents\AutoKSP3\GameData\G3MagnetBoots"
 
 set "REPODIR=$(ProjectDir)GameData\G3MagnetBoots"
 

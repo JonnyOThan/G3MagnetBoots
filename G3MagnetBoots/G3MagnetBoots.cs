@@ -15,14 +15,11 @@ namespace G3MagnetBoots
     internal class G3MagnetBoots : MonoBehaviour
     {
         public static G3MagnetBoots Instance;
+        internal static G3MagnetBootsSettings Settings => G3MagnetBootsSettings.Current;
+        internal static bool lockedCameraModeEnabled => Settings?.magbootsLockedCameraModeEnabled ?? false;
 
         internal const string MODID = "G3MagnetBoots";
         internal const string MODNAME = "G3 Magnet Boots";
-
-        // variables (configurable in future)
-        public const float EnterRelSpeed = 0.6f;
-        public const float ExitRelSpeed = 1.0f; // hysteresis exit velocity
-        public const float MaxStandClearance = 0.1f;
 
         private void Awake()
         {

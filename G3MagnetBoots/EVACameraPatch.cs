@@ -1,10 +1,5 @@
 ﻿using HarmonyLib;
-using System;
-using System.Collections.Generic;
-using System.Linq;
 using System.Reflection;
-using System.Text;
-using System.Threading.Tasks;
 using UnityEngine;
 
 namespace G3MagnetBoots
@@ -13,25 +8,27 @@ namespace G3MagnetBoots
     public static class Patch_FlightCamera_SetMode_EvaLocked
     {
         [HarmonyPrefix]
-        [HarmonyPatch("setMode")]
-        public static bool Prefix(FlightCamera __instance, ref FlightCamera.Modes m)
+        [HarmonyPatch("setMode", new[] { typeof(FlightCamera.Modes) })]
+        public static bool Prefix(FlightCamera __instance, ref FlightCamera.Modes __0)
         {
-            var active = FlightGlobals.ActiveVessel;
-            if (active == null) return true;
+            bool IsOnHull = FlightGlobals.ActiveVessel?.rootPart?.FindModuleImplementing<ModuleG3MagnetBoots>()?.IsOnHull ?? false;
 
-            bool evaOnHull = G3MagnetBootsModule.ActiveEvaOnHull();
-            
-            if (active.isEVA && m == FlightCamera.Modes.LOCKED && !evaOnHull)
+            if (__0 == FlightCamera.Modes.LOCKED && (!G3MagnetBoots.lockedCameraModeEnabled || !IsOnHull))
+            {
+                __0 = FlightCamera.Modes.FREE;
+                return true;
+            }
+
+            if (__instance.mode == FlightCamera.Modes.LOCKED &&
+                __0 == FlightCamera.Modes.FREE &&
+                Patch_FlightCamera_LateUpdate_EvaLocked.InLateUpdate)
             {
                 return false;
             }
 
-            if (active.isEVA &&
-                __instance.mode == FlightCamera.Modes.LOCKED &&
-                m == FlightCamera.Modes.FREE &&
-                Patch_FlightCamera_LateUpdate_EvaLocked.InLateUpdate)
+            if (G3MagnetBoots.lockedCameraModeEnabled && IsOnHull && __0 == FlightCamera.Modes.AUTO) // unblocking LOCKED mode on EVA means the AUTO mode is also enabled by way of the next in the cycle, so we stock-alike skip it back to FREE
             {
-                return false;
+                __0 = FlightCamera.Modes.FREE;
             }
 
             return true;
@@ -41,92 +38,79 @@ namespace G3MagnetBoots
     [HarmonyPatch(typeof(FlightCamera), "LateUpdate")]
     internal static class Patch_FlightCamera_LateUpdate_EvaLocked
     {
-        private static readonly MethodInfo miUpdateFoR =
-            AccessTools.Method(typeof(FlightCamera), "updateFoR");
-
-        private static readonly FieldInfo fiFoRlerp =
-            AccessTools.Field(typeof(FlightCamera), "FoRlerp");
-
-        private static readonly MethodInfo miSetMode =
-            AccessTools.Method(typeof(FlightCamera), "setMode", new[] { typeof(FlightCamera.Modes) });
+        private static readonly MethodInfo UpdateFoR = AccessTools.Method(typeof(FlightCamera), "updateFoR");
+        private static readonly FieldInfo FoRlerp = AccessTools.Field(typeof(FlightCamera), "FoRlerp");
+        private static readonly MethodInfo SetMode = AccessTools.Method(typeof(FlightCamera), "setMode", new[] { typeof(FlightCamera.Modes) });
+        private static readonly FieldInfo FrameOfReference = AccessTools.Field(typeof(FlightCamera), "frameOfReference");
 
         internal static bool InLateUpdate;
-
-        // Number of consecutive frames the EVA has been off the hull
         private static int framesOffHull = 0;
 
-        // Tune this if needed:
-        private const int OffHullFramesToUnlock = 5;
-
         [HarmonyPrefix]
-        private static void Prefix()
-        {
-            InLateUpdate = true;
-        }
+        private static void Prefix() => InLateUpdate = true;
 
         [HarmonyPostfix]
         private static void Postfix(FlightCamera __instance)
         {
             try
             {
-                var active = FlightGlobals.ActiveVessel;
-                if (active == null || !active.isEVA)
-                    return;
+                if (UpdateFoR == null || FoRlerp == null || SetMode == null || FrameOfReference == null) return; // guard against reflection failure which will never happen but harmony is scary like that
 
-                bool evaOnHull = G3MagnetBootsModule.ActiveEvaOnHull();
-
-                if (evaOnHull)
-                {
+                var v = FlightGlobals.ActiveVessel;
+                if (v == null || !v.isEVA) return;
+                if (!G3MagnetBoots.lockedCameraModeEnabled) {
                     framesOffHull = 0;
+                    return;
+                }
+                bool IsOnHull = v.rootPart?.FindModuleImplementing<ModuleG3MagnetBoots>()?.IsOnHull ?? false;
+
+                framesOffHull = IsOnHull ? 0 : framesOffHull + 1;
+                if (!IsOnHull && framesOffHull >= ModuleG3MagnetBoots.OFF_HULL_FRAMES_TO_UNLOCK &&
+                    __instance.mode == FlightCamera.Modes.LOCKED)
+                {
+                    InLateUpdate = false;
+                    SetMode.Invoke(__instance, new object[] { FlightCamera.Modes.FREE });
+                    return;
+                }
+
+                if (!IsOnHull) return;
+                if (__instance.mode != FlightCamera.Modes.LOCKED) return;
+
+                // ---- UP-ONLY FoR adjustment ----
+                var curFoR = (Quaternion)FrameOfReference.GetValue(__instance);
+
+                Vector3 desiredUp = v.transform.up.normalized; // only thing taken from the kerbal
+                Vector3 curUp = (curFoR * Vector3.up).normalized;
+
+                float dot = Vector3.Dot(curUp, desiredUp);
+
+                Quaternion swing;
+                if (dot > ModuleG3MagnetBoots.QUAT_DOT_NEARLY_SAME)
+                {
+                    swing = Quaternion.identity;
+                }
+                else if (dot < ModuleG3MagnetBoots.QUAT_DOT_OPPOSITE)
+                {
+                    // 180° flip: pick a stable axis using current FoR forward/right, projected onto the desired up plane
+                    Vector3 axis = Vector3.ProjectOnPlane(curFoR * Vector3.forward, desiredUp);
+                    if (axis.sqrMagnitude < ModuleG3MagnetBoots.VECTOR_ZERO_THRESHOLD)
+                        axis = Vector3.ProjectOnPlane(curFoR * Vector3.right, desiredUp);
+                    axis.Normalize();
+                    swing = Quaternion.AngleAxis(ModuleG3MagnetBoots.QUAT_FLIP_ANGLE, axis);
                 }
                 else
                 {
-                    framesOffHull++;
+                    swing = Quaternion.FromToRotation(curUp, desiredUp);
                 }
 
-                // Only force unlock if we've been *reliably* off hull for a few frames
-                if (!evaOnHull &&
-                    framesOffHull >= OffHullFramesToUnlock &&
-                    __instance.mode == FlightCamera.Modes.LOCKED)
-                {
-                    // Temporarily drop the LateUpdate guard so our own setMode() is allowed
-                    InLateUpdate = false;
-                    miSetMode.Invoke(__instance, new object[] { FlightCamera.Modes.FREE });
-                    return;
-                }
+                Quaternion newFoR = swing * curFoR;
+                var lerp = (float)FoRlerp.GetValue(__instance);
 
-                // If not on hull, do not apply custom LOCKED orientation logic
-                if (!evaOnHull)
-                    return;
-
-                if (__instance.mode != FlightCamera.Modes.LOCKED)
-                    return;
-
-                // Existing orientation logic, only while firmly on hull
-                Quaternion shpRel = __instance.GetCameraFoR(FoRModes.SHP_REL);
-                Vector3 up = FlightGlobals.ActiveVessel.transform.up.normalized;
-                Vector3 kerbalFwd = shpRel * Vector3.forward;
-
-                Vector3 flatFwd = Vector3.ProjectOnPlane(kerbalFwd, up);
-                if (flatFwd.sqrMagnitude < 1e-6f)
-                {
-                    flatFwd = Vector3.ProjectOnPlane(shpRel * Vector3.right, up);
-                }
-                flatFwd.Normalize();
-
-                miUpdateFoR.Invoke(
-                    __instance,
-                    new object[]
-                    {
-                    Quaternion.LookRotation(flatFwd, up),
-                    fiFoRlerp.GetValue(__instance)
-                    });
+                UpdateFoR.Invoke( __instance, new object[] { newFoR, lerp });
             }
-            finally
-            {
-                InLateUpdate = false;
-            }
+            finally { InLateUpdate = false; }
         }
     }
+
 
 }

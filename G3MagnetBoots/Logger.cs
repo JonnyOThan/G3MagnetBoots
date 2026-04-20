@@ -1,5 +1,6 @@
 ﻿using KSP;
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Reflection;
@@ -33,7 +34,6 @@ namespace G3MagnetBoots
 
         static Logger()
         {
-            IsDebugMode = true;
             try
             {
                 var dir = Path.GetDirectoryName(LogFilePath);
@@ -63,12 +63,35 @@ namespace G3MagnetBoots
             LogCore(Level.Debug, message, detail, includeCaller: true);
         }
 
+
+        internal static float TraceDebounceSeconds = 0.5f;
+        private static readonly Dictionary<int, float> _nextTraceTimeByKey = new();
+
         [MethodImpl(MethodImplOptions.NoInlining)]
         internal static void Trace(string message = "")
         {
             if (!IsDebugMode) return;
+
+            float debounce = TraceDebounceSeconds;
+            if (debounce > 0f)
+            {
+                // caller: Trace <- caller, so 1 frame up
+                var m = new StackFrame(1, false).GetMethod();
+                string cls = m?.DeclaringType?.Name ?? "UnknownClass";
+                string mem = m?.Name ?? "UnknownMethod";
+
+                int key = (cls + "." + mem + "|" + (message ?? "")).GetHashCode();
+                float now = Time.unscaledTime;
+
+                if (_nextTraceTimeByKey.TryGetValue(key, out float next) && now < next)
+                    return;
+
+                _nextTraceTimeByKey[key] = now + debounce;
+            }
+
             LogCore(Level.Debug, message, detail: "", includeCaller: true);
         }
+
 
         internal static void Info(string message, string detail = "")
             => LogCore(Level.Info, message, detail, includeCaller: false);
