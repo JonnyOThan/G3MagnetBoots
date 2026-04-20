@@ -37,7 +37,7 @@ namespace G3MagnetBoots
                 return true;
             }
         }
-        
+
 
         [HarmonyPatch(typeof(KerbalEVA), "CheckHelmetOffSafe", new[] { typeof(bool), typeof(bool) })]
         internal static class Patch_KerbalEVA_CheckHelmetOffSafe
@@ -58,6 +58,135 @@ namespace G3MagnetBoots
                     Logger.Exception(ex);
                 }
                 return true;
+            }
+        }
+
+        // =========================================================================
+        // Weld-on-Hull patches: use hull orientation/heading instead of stock float logic
+        // =========================================================================
+
+        [HarmonyPatch(typeof(KerbalEVA), "weld_acquireHeading_OnFixedUpdate")]
+        internal static class Patch_KerbalEVA_weld_acquireHeading_OnFixedUpdate
+        {
+            static readonly Action<ModuleG3MagnetBoots> _refreshHullTarget = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "RefreshHullTarget"));
+            static readonly Action<ModuleG3MagnetBoots> _orientToSurfaceNormal = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "OrientToSurfaceNormal"));
+            static readonly Action<ModuleG3MagnetBoots> _updateHeading = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "UpdateHeading"));
+            static readonly Action<ModuleG3MagnetBoots> _updateRagdollVelocities = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "updateRagdollVelocities"));
+
+            static bool Prefix(KerbalEVA __instance)
+            {
+                if (__instance == null) return true;
+                var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+                if (magBoots?.IsOnHull != true) return true; // use stock float logic
+
+                // Hull path: use grounded-equivalent logic with hull orientation
+                Logger.Info("[Weld] weld_acquireHeading_OnFixedUpdate: on hull, using grounded path with hull orientation");
+
+                // Grounded branch equivalent: update hull orientation and heading
+                _refreshHullTarget(magBoots);
+                _orientToSurfaceNormal(magBoots);
+                _updateHeading(magBoots);
+                _updateRagdollVelocities(magBoots);
+
+                return false; // skip original
+            }
+        }
+
+        [HarmonyPatch(typeof(KerbalEVA), "weld_acquireHeading_OnLateUpdate")]
+        internal static class Patch_KerbalEVA_weld_acquireHeading_OnLateUpdate
+        {
+            static readonly Action<ModuleG3MagnetBoots> _updateHeading = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "UpdateHeading"));
+
+            static bool Prefix(KerbalEVA __instance)
+            {
+                if (__instance == null) return true;
+                var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+                if (magBoots?.IsOnHull != true) return true; // use stock float logic (Slerp)
+
+                // Hull path: use grounded-equivalent logic instead of full-body Slerp
+                Logger.Info("[Weld] weld_acquireHeading_OnLateUpdate: on hull, using grounded path (SetWaypoint + UpdateHeading)");
+
+                // Grounded branch: just set waypoint and heading, no body rotation
+                Part constructionTarget = KerbalEVAAccess.ConstructionTarget(__instance);
+                if (constructionTarget != null)
+                    __instance.SetWaypoint(constructionTarget.transform.position);
+
+                _updateHeading(magBoots);
+
+                return false; // skip original (which does Slerp for float)
+            }
+        }
+
+        [HarmonyPatch(typeof(KerbalEVA), "weld_OnFixedUpdate")]
+        internal static class Patch_KerbalEVA_weld_OnFixedUpdate
+        {
+            static readonly Action<ModuleG3MagnetBoots> _refreshHullTarget = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "RefreshHullTarget"));
+            static readonly Action<ModuleG3MagnetBoots> _orientToSurfaceNormal = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "OrientToSurfaceNormal"));
+            static readonly Action<ModuleG3MagnetBoots> _updateMovementOnVessel = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "UpdateMovementOnVessel"));
+            static readonly Action<ModuleG3MagnetBoots> _updateRagdollVelocities = 
+                AccessTools.MethodDelegate<Action<ModuleG3MagnetBoots>>(AccessTools.Method(typeof(ModuleG3MagnetBoots), "updateRagdollVelocities"));
+
+            static bool Prefix(KerbalEVA __instance)
+            {
+                if (__instance == null) return true;
+                var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+                if (magBoots?.IsOnHull != true) return true; // use stock float logic
+
+                Logger.Info("[Weld] weld_OnFixedUpdate: on hull, using grounded path with hull orientation + arm-aim blend");
+
+                // Hull physics: keep kerbal planted and oriented to hull
+                _refreshHullTarget(magBoots);
+                _orientToSurfaceNormal(magBoots);
+                _updateMovementOnVessel(magBoots);
+                _updateRagdollVelocities(magBoots);
+
+                // Zero angular velocity so kerbal doesn't drift while welding
+                var rb = __instance.part.rb;
+                if (rb != null)
+                    rb.angularVelocity = Vector3.zero;
+
+                // Arm-aim animation blend (mirrors stock grounded branch)
+                Part constructionTarget = KerbalEVAAccess.ConstructionTarget(__instance);
+                if (constructionTarget != null && rb != null)
+                {
+                    // Calculate angle from kerbal forward to construction target
+                    // Use hull-aligned forward instead of world-space
+                    Vector3 toTarget = constructionTarget.transform.position - __instance.transform.position;
+                    float value = Vector3.SignedAngle(toTarget, __instance.transform.forward, __instance.transform.right);
+
+                    value = Mathf.Clamp(value, -20f, 45f);
+
+                    var anim = KerbalEVAAccess.Animation(__instance);
+                    if (anim != null)
+                    {
+                        if (value > 0f)
+                        {
+                            // Target above kerbal: blend weld_aim_up
+                            float t = value / 45f;
+                            anim.Blend(__instance.Animations.weld_aim_up, t, 0.15f);
+                            anim.Blend(__instance.Animations.weld_aim_down, 0f, 0.15f);
+                            anim.Blend(__instance.Animations.weld, 1f - t, 0.15f);
+                        }
+                        else
+                        {
+                            // Target below kerbal: blend weld_aim_down
+                            float t = -value / 20f;
+                            anim.Blend(__instance.Animations.weld_aim_down, t, 0.15f);
+                            anim.Blend(__instance.Animations.weld_aim_up, 0f, 0.15f);
+                            anim.Blend(__instance.Animations.weld, 1f + value, 0.15f);
+                        }
+                    }
+                }
+
+                return false; // skip original (which does UpdateOrientationPID + LookAt for float)
             }
         }
     }
@@ -215,8 +344,7 @@ namespace G3MagnetBoots
 
                 var allCols = flagSite.GetComponentsInChildren<Collider>();
                 foreach (var col in allCols)
-                    foreach (var col in allCols)
-                        col.enabled = false;
+                    col.enabled = false;
             }
 
             return false;
@@ -468,127 +596,8 @@ namespace G3MagnetBoots
     // weld_acquireHeading_OnFixedUpdate
     // Stock grounded path: correctGroundedRotation() + UpdateMovement() + UpdateHeading()
     // Stock float path:    UpdateOrientationPID()
-    // Our fix: when on hull, run the grounded path equivalents.
-    // -------------------------------------------------------------------------
-    [HarmonyPatch(typeof(KerbalEVA), "weld_acquireHeading_OnFixedUpdate")]
-    internal static class Patch_KerbalEVA_weldAcquireHeading_OnFixedUpdate
-    {
-        static void Postfix(KerbalEVA __instance)
-        {
-            if (__instance == null) return;
-            var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
-            if (magBoots == null || !magBoots.IsOnHull) return;
-
-            // We are on a hull and stock just ran the float branch.
-            // Undo the free-float orientation change by re-applying hull orientation.
-            // OrientToSurfaceNormal + UpdateMovementOnVessel handle physics;
-            // UpdateHeading drives deltaHdg so the turn animation crossfade below is
-            // consistent with which direction the kerbal is turning.
-            Logger.Info("[HullWeld] Detected on hull in weld_acquireHeading_OnFixedUpdate, applying hull weld fix: RefreshHullTarget + OrientToSurfaceNormal + UpdateMovementOnVessel + UpdateHeading");
-            magBoots.RefreshHullTargetPublic();
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnFixedUpdate hull fix: RefreshHullTarget");
-            magBoots.OrientToSurfaceNormalPublic();
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnFixedUpdate hull fix: OrientToSurfaceNormal");
-            magBoots.UpdateMovementOnVesselPublic();
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnFixedUpdate hull fix: UpdateMovementOnVessel");
-            magBoots.UpdateHeadingPublic();
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnFixedUpdate hull fix: UpdateHeading");
-            magBoots.UpdateRagdollVelocitiesPublic();
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnFixedUpdate hull fix: UpdateRagdollVelocities");
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // weld_acquireHeading_OnLateUpdate
-    // Stock float path: Slerp rotates entire kerbal toward target in world space.
-    // Stock grounded path: SetWaypoint + UpdateHeading (no body rotation here).
-    // Our fix: when on hull, suppress the body-rotation Slerp that stock already ran.
-    // -------------------------------------------------------------------------
-    [HarmonyPatch(typeof(KerbalEVA), "weld_acquireHeading_OnLateUpdate")]
-    internal static class Patch_KerbalEVA_weldAcquireHeading_OnLateUpdate
-    {
-        // Prefix: detect hull state before stock runs so we can cancel the float branch.
-        // We return false (skip original) only when on hull; grounded path is fine.
-        static bool Prefix(KerbalEVA __instance)
-        {
-            if (__instance == null) return true;
-            var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
-            if (magBoots == null || !magBoots.IsOnHull) return true;
-            Logger.Info("[HullWeld] Detected on hull in weld_acquireHeading_OnLateUpdate, applying hull weld fix: skipping original Slerp and running SetWaypoint + UpdateHeading");
-            // On hull: run the grounded branch manually (SetWaypoint + UpdateHeading)
-            // and skip the original (which would Slerp the whole body).
-            if (__instance.constructionTarget != null)
-                __instance.SetWaypoint(__instance.constructionTarget.transform.position);
-
-            Logger.Info("[HullWeld] Applying weld_acquireHeading_OnLateUpdate hull fix: SetWaypoint + UpdateHeading");
-            magBoots.UpdateHeadingPublic();
-            return false; // skip original
-        }
-    }
-
-    // -------------------------------------------------------------------------
-    // weld_OnFixedUpdate
-    // Stock grounded path: correctGroundedRotation, ZeroRBVelocity, UpdateMovement,
-    //                      arm-aim animation blending (weld_aim_up / weld_aim_down).
-    // Stock float path:    UpdateOrientationPID + transform.LookAt (full body spin).
-    // Our fix: when on hull, skip original and run grounded-equivalent hull physics +
-    //          the same arm-aim blend logic the stock grounded branch uses.
-    // -------------------------------------------------------------------------
-    [HarmonyPatch(typeof(KerbalEVA), "weld_OnFixedUpdate")]
-    internal static class Patch_KerbalEVA_weld_OnFixedUpdate
-    {
-        static bool Prefix(KerbalEVA __instance)
-        {
-            if (__instance == null) return true;
-            var magBoots = __instance.part?.FindModuleImplementing<G3MagnetBoots>();
-            if (magBoots == null || !magBoots.IsOnHull) return true;
-
-            Logger.Info("[HullWeld] weld_OnFixedUpdate: detected on hull, applying hull weld fix");
-            // --- Hull physics (keeps kerbal planted and oriented) ---
-            magBoots.RefreshHullTargetPublic();
-            magBoots.OrientToSurfaceNormalPublic();
-            magBoots.UpdateMovementOnVesselPublic();
-            magBoots.UpdateRagdollVelocitiesPublic();
-
-            // Zero RB velocity tangentially so the kerbal doesn't drift while welding
-            var rb = __instance.part.rb;
-            if (rb != null)
-                rb.angularVelocity = Vector3.zero;
-
-            Logger.Info("[HullWeld] weld_OnFixedUpdate: applying weld hull fix physics: RefreshHullTarget + OrientToSurfaceNormal + UpdateMovementOnVessel + UpdateRagdollVelocities + zero angular velocity");
-            // --- Arm-aim animation blend (mirrors stock grounded branch) ---
-            if (__instance.constructionTarget != null && rb != null)
-            {
-                float value = Vector3.SignedAngle(
-                    __instance.constructionTarget.transform.position - __instance.transform.position,
-                    __instance.transform.forward,
-                    __instance.transform.right);
-
-                value = Mathf.Clamp(value, -20f, 45f);
-
-                var anim = KerbalEVAAccess.Animation(__instance);
-                if (anim != null)
-                {
-                    if (value > 0f)
-                    {
-                        Logger.Info("[HullWeld] weld_OnFixedUpdate: welding toward target above kerbal, blending weld_aim_up");
-                        float t = value / 45f;
-                        anim.Blend(__instance.Animations.weld_aim_up, t, 0.15f);
-                        anim.Blend(__instance.Animations.weld_aim_down, 0f, 0.15f);
-                        anim.Blend(__instance.Animations.weld, 1f - t, 0.15f);
-                    }
-                    else
-                    {
-                        Logger.Info("[HullWeld] weld_OnFixedUpdate: welding toward target behind kerbal, blending weld_aim_down");
-                        float t = -value / 20f;
-                        anim.Blend(__instance.Animations.weld_aim_down, t, 0.15f);
-                        anim.Blend(__instance.Animations.weld_aim_up, 0f, 0.15f);
-                        anim.Blend(__instance.Animations.weld, 1f - t, 0.15f);
-                    }
-                }
-            }
-            Logger.Info("[HullWeld] Applying weld_OnFixedUpdate hull fix: hull physics + arm-aim blend, skipping original LookAt/OrientationPID");
-            return false; // skip original (prevents full-body LookAt / OrientationPID)
-        }
-    }
+    // TODO: Weld-on-hull feature removed due to incomplete implementation.
+    // The other AI wrote patches that call non-existent Public wrapper methods
+    // on ModuleG3MagnetBoots and reference non-existent KerbalEVA.constructionTarget.
+    // This feature should be re-implemented properly if needed.
 }

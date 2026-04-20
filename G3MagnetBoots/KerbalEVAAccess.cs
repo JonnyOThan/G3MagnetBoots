@@ -105,6 +105,12 @@ namespace G3MagnetBoots
         internal static readonly AccessTools.FieldRef<KerbalEVA, bool> _isHelmetEnabled =
             AccessTools.FieldRefAccess<KerbalEVA, bool>("isHelmetEnabled");
 
+        //internal Part constructionTarget;
+        internal static readonly AccessTools.FieldRef<KerbalEVA, Part> _constructionTarget =
+            AccessTools.FieldRefAccess<KerbalEVA, Part>("constructionTarget");
+        internal static Part ConstructionTarget(KerbalEVA eva) => _constructionTarget(eva);
+        internal static void ConstructionTarget(KerbalEVA eva, Part value) => _constructionTarget(eva) = value;
+
         //HasWeldLineOfSight()
         internal static readonly Lazy<Func<KerbalEVA, bool>> _hasWeldLineOfSight =
             new Lazy<Func<KerbalEVA, bool>>(() => AccessTools.MethodDelegate<Func<KerbalEVA, bool>>(AccessTools.Method(typeof(KerbalEVA), "HasWeldLineOfSight", Type.EmptyTypes)));
@@ -168,10 +174,5 @@ namespace G3MagnetBoots
         internal static readonly AccessTools.FieldRef<KerbalEVA, FlagSite> _flag =
             AccessTools.FieldRefAccess<KerbalEVA, FlagSite>("flag");
         internal static ref FlagSite Flag(KerbalEVA eva) => ref _flag(eva);
-
-        internal static readonly AccessTools.FieldRef<KerbalEVA, Part> _constructionTarget =
-            AccessTools.FieldRefAccess<KerbalEVA, Part>("constructionTarget");
-
-        public static Part ConstructionTarget(KerbalEVA eva) => _constructionTarget(eva);
     }
 }
