@@ -32,7 +32,7 @@ namespace G3MagnetBoots
         private bool _wasActive;            // true if this was the active vessel last frame
 
         internal const float OFF_HULL_MATCH_DELAY = 2.0f; // mirrors JETPACK_DEPLOY_DELAY_JUMP
-        internal const float FUEL_LOW_THRESHOLD = 0.1f;  // 10% — warn before abort
+        internal const float FUEL_LOW_THRESHOLD = 0.05f;  // 5% — warn before abort
         private bool _fuelLowWarned;
         private bool _lastWasRagdoll;         // ragdoll state last frame, for edge detection
         private bool _emergencyMatchEngaged;  // true if we auto-enabled match due to ragdoll emergency
@@ -48,7 +48,7 @@ namespace G3MagnetBoots
         }
 
         bool IsAGOn(KSPActionGroup g) => VesselUtils.IsAGOn(vessel, g);
-        public void SetAG(KSPActionGroup g, bool active) => VesselUtils.SetAG(vessel, g, active);
+        void SetAG(KSPActionGroup g, bool active) => VesselUtils.SetAG(vessel, g, active);
         void ToggleAG(KSPActionGroup g) => VesselUtils.ToggleAG(vessel, g);
         public bool IsBrakesOn => IsAGOn(KSPActionGroup.Brakes);
 
@@ -356,7 +356,7 @@ namespace G3MagnetBoots
         }
 
         // Returns true for any FSM state where we should NOT be thrusting:
-        // on-hull custom states, grounded, ladder, seated, swimming, construction.
+        // on-hull custom states, grounded, ladder, seated, swimming.
         // Ragdoll and free-float states return false.
         private bool IsOnHullOrGrounded()
         {
@@ -389,11 +389,7 @@ namespace G3MagnetBoots
                 || s == _kerbal.st_swim_idle
                 || s == _kerbal.st_swim_fwd
                 || s == _kerbal.st_seated_cmd
-                || s == _kerbal.st_grappled
-                || s == _kerbal.st_enteringConstruction
-                || s == _kerbal.st_exitingConstruction
-                || s == _kerbal.st_weld
-                || s == _kerbal.st_weldAcquireHeading;
+                || s == _kerbal.st_grappled;
         }
 
         // Called by Harmony patch when player intentionally stows the jetpack
@@ -455,13 +451,9 @@ namespace G3MagnetBoots
             float thrustPercentageFactor = _kerbal.thrustPercentage * 0.01f;
             if (thrustPercentageFactor <= 0f || _kerbal.linPower <= 0f) return Vector3.zero;
 
-            // Nerf SmartRCS thrust unless target is moving dangerously fast
-            float maxSmartRcs = Settings?.maxSmartRcsThrust ?? 0.5f;
-            float thrustCap = (relSpeed > 2.5f) ? 1.0f : maxSmartRcs;
-
-            // Exact packLinear scale to cancel relVel in one frame, capped at pack maximum and SmartRCS cap
+            // Exact packLinear scale to cancel relVel in one frame, capped at pack maximum.
             float exactScale = (relSpeed * Mathf.Max(rb.mass, 0.001f)) / (_kerbal.linPower * Time.fixedDeltaTime);
-            float thrustScale = Mathf.Min(thrustPercentageFactor, exactScale, thrustCap);
+            float thrustScale = Mathf.Min(thrustPercentageFactor, exactScale);
 
             Vector3 ourContrib = thrustDir * thrustScale;
 
@@ -471,8 +463,12 @@ namespace G3MagnetBoots
             if (_playerHasManualInput)
             {
                 Vector3 playerDir = playerPackTgtRPos.normalized;
+                // Remove the entire component of our contribution along the player's thrust axis
+                // (positive or negative) so manual input always wins on that axis.
+                // Whatever is left is the part the player isn't covering — we keep matching that.
                 float overlap = Vector3.Dot(ourContrib, playerDir);
                 ourContrib -= playerDir * overlap;
+                // If the result is negligible, nothing left for us to do this frame.
                 if (ourContrib.sqrMagnitude < 0.0001f)
                     return Vector3.zero;
                 thrustScale = ourContrib.magnitude;

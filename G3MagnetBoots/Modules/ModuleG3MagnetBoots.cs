@@ -6,10 +6,6 @@ using System.Linq;
 using UnityEngine;
 using static KerbalEVA;
 
-/*  To fix:
- *  
- */
-
 /*  For the future:
  *  Kerbals surface - aligned forward direction(the way they face) doesn't turn alongside the plane they are attached to, resulting in clear misaligned facing direction when the vessel beneath rotates.
  *  KSP2-style time-smoothed spherecasts and orientation changes with SMA Simple Moving Average filter to reduce jitter, consider a 2nd spherecast from a predicted future position to surface normal early.
@@ -113,7 +109,7 @@ namespace G3MagnetBoots
         private bool _golfStartedFromHull;
         private bool _flagStartedFromHull;
 
-        // KSP2 styled tuning (made configurable via constants)
+        // KSP2 styled tuning
         public float GroundSpherecastUpOffset = SPHERECAST_UP_OFFSET_DEFAULT;
         public float GroundSpherecastRadius = SPHERECAST_RADIUS_DEFAULT;
         public float GroundSpherecastLength = SPHERECAST_LENGTH_DEFAULT;
@@ -204,9 +200,6 @@ namespace G3MagnetBoots
             set { if (Kerbal != null) KerbalEVAAccess.FuelFlowRate(Kerbal) = value; }
         }
 
-        //private MagDebugViz _viz;
-
-        //private bool Viz => (G3MagnetBootsSettings.Current != null) && G3MagnetBootsSettings.Current.isDebugMode;
         bool IsAGOn(KSPActionGroup g) => VesselUtils.IsAGOn(vessel, g);
         void SetAG(KSPActionGroup g, bool active) => VesselUtils.SetAG(vessel, g, active);
         void ToggleAG(KSPActionGroup g) => VesselUtils.ToggleAG(vessel, g);
@@ -216,14 +209,14 @@ namespace G3MagnetBoots
                 FSM.CurrentState == st_idle_hull ||
                 FSM.CurrentState == st_walk_hull ||
                 FSM.CurrentState == st_jump_hull ||
-                //(FSM.CurrentState == Kerbal?.st_weldAcquireHeading && _weldStartedFromHull) ||
-                //(FSM.CurrentState == Kerbal?.st_weld && _weldStartedFromHull) ||
                 (FSM.CurrentState == Kerbal?.st_playing_golf && _golfStartedFromHull) ||
                 (FSM.CurrentState == Kerbal?.st_flagAcquireHeading && _flagStartedFromHull) ||
                 (FSM.CurrentState == Kerbal?.st_flagPlant && _flagStartedFromHull)
             );
 
         public bool FlagStartedFromHull => _flagStartedFromHull;
+        public bool HullTargetIsValid => _hullTarget.IsValid();
+        public string CurrentFSMStateName => FSM?.CurrentState?.name ?? "null";
         public Rigidbody HullTargetRigidbody => _hullTarget.rigidbody;
         public bool VesselUnderControl => VesselUtils.VesselUnderControl(Kerbal);
         public bool IsJetpackThrustingUp = false;
@@ -356,11 +349,8 @@ namespace G3MagnetBoots
             FSM.AddEvent(Kerbal.On_packToggle, st_idle_hull);
             FSM.AddEvent(Kerbal.On_stumble, st_idle_hull);
             FSM.AddEvent(Kerbal.On_ladderGrabStart, st_idle_hull);
-            FSM.AddEvent(Kerbal.On_constructionModeEnter, st_idle_hull);
-            FSM.AddEvent(Kerbal.On_constructionModeExit, st_idle_hull);
             FSM.AddEvent(Kerbal.On_flagPlantStart, st_idle_hull);
             FSM.AddEvent(Kerbal.On_boardPart, st_idle_hull);
-            FSM.AddEvent(Kerbal.On_weldStart, st_idle_hull);
 
             // Attach / Detach Events
             On_attachToHull = new("Attach to Hull");
@@ -409,11 +399,8 @@ namespace G3MagnetBoots
             FSM.AddEvent(Kerbal.On_packToggle, st_walk_hull);
             FSM.AddEvent(Kerbal.On_stumble, st_walk_hull);
             FSM.AddEvent(Kerbal.On_ladderGrabStart, st_walk_hull);
-            FSM.AddEvent(Kerbal.On_constructionModeEnter, st_walk_hull);
-            FSM.AddEvent(Kerbal.On_constructionModeExit, st_walk_hull);
             FSM.AddEvent(Kerbal.On_flagPlantStart, st_walk_hull);
             FSM.AddEvent(Kerbal.On_boardPart, st_walk_hull);
-            FSM.AddEvent(Kerbal.On_weldStart, st_walk_hull);
 
             // Move (Hull) Event
             On_MoveHull = new("Move (Hull / FPS)");
@@ -475,9 +462,6 @@ namespace G3MagnetBoots
                 SetAG(KSPActionGroup.Gear, true);
                 Kerbal.StartCoroutine(On_ladderLetGo_Coroutine());
             };
-
-            // Flag planting from hull states
-            FSM.AddEvent(Kerbal.On_flagPlantStart, st_idle_hull);
 
             // Zero movement and record origin when flag plant starts from hull
             Kerbal.On_flagPlantStart.OnEvent -= On_flagPlantStart_Hull_Hook;
@@ -772,38 +756,8 @@ namespace G3MagnetBoots
             }
         }
 
-        protected virtual void weld_OnEnter(KFSMState st)
-        {
-            // identical to stock weld_OnEnter just including the hulltarget surface check alongside the stock surface check
-            RefreshHullTarget();
-
-            Kerbal.Animations.weld.State.time = Kerbal.Animations.weld.start;
-            Kerbal.Animations.weldSuspended.State.time = Kerbal.Animations.weldSuspended.start;
-            if (KerbalEVAAccess.HasWeldLineOfSight(Kerbal))
-            {
-                if (KerbalEVAAccess.SurfaceContact(Kerbal) || _hullTarget.IsValid())
-                {
-                    _animation.CrossFade(Kerbal.Animations.weld, ANIMATION_CROSSFADE_TIME, PlayMode.StopSameLayer);
-                }
-                else
-                {
-                    _animation.CrossFade(Kerbal.Animations.weldSuspended, ANIMATION_CROSSFADE_TIME, PlayMode.StopSameLayer);
-                }
-                KerbalEVAAccess.WasVisorEnabledBeforeWelding(Kerbal) = KerbalEVAAccess.VisorState(Kerbal) == VisorStates.Lowered;
-                Kerbal.LowerVisor(forceHelmet: true);
-                if (Kerbal.WeldFX != null)
-                {
-                    Kerbal.WeldFX.Play();
-                }
-            }
-            else
-            {
-                FSM.RunEvent(Kerbal.On_weldComplete);
-            }
-        }
-
         private bool _doProbeRay = false;
-        protected virtual void RefreshHulLTarget_DoProbe()
+        protected virtual void RefreshHullTarget_DoProbe()
         {
             _doProbeRay = true;
             try { RefreshHullTarget(); }
@@ -817,6 +771,7 @@ namespace G3MagnetBoots
                 ClearHullTarget();
                 return;
             }
+
             if (!HullTargeting.TryAcquireHullSpherecast(
                 Kerbal,
                 (!_hullTarget.IsValid() && _doProbeRay), // doProbeRay
