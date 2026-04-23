@@ -43,6 +43,9 @@ namespace G3MagnetBoots
         internal static readonly AccessTools.FieldRef<KerbalEVA, Vector3> _cmdDir =
             AccessTools.FieldRefAccess<KerbalEVA, Vector3>("cmdDir");
 
+        internal static readonly AccessTools.FieldRef<KerbalEVA, Vector3> _cmdRot =
+            AccessTools.FieldRefAccess<KerbalEVA, Vector3>("cmdRot");
+
         internal static readonly AccessTools.FieldRef<KerbalEVA, Vector3> _fUp =
             AccessTools.FieldRefAccess<KerbalEVA, Vector3>("fUp");
 
@@ -136,6 +139,7 @@ namespace G3MagnetBoots
         internal static ref float TgtSpeed(KerbalEVA eva) => ref _tgtSpeed(eva);
 
         internal static ref Vector3 CmdDir(KerbalEVA eva) => ref _cmdDir(eva);
+        internal static ref Vector3 CmdRot(KerbalEVA eva) => ref _cmdRot(eva);
         internal static ref Vector3 FUp(KerbalEVA eva) => ref _fUp(eva);
         internal static ref Vector3 TgtRpos(KerbalEVA eva) => ref _tgtRpos(eva);
         internal static ref Vector3 TgtFwd(KerbalEVA eva) => ref _tgtFwd(eva);

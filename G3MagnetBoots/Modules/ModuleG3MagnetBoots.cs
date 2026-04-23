@@ -105,9 +105,11 @@ namespace G3MagnetBoots
         private KFSMEvent On_jump_hull; // st_idle_hull OR st_walk_hull -> st_jump_hull
         private KFSMTimedEvent On_jump_hull_completed; // st_jump_hull -> st_idle_fl
 
-        // EVA science on Hull – tracks whether golf/flag-plant was triggered from a hull state
+        // EVA science on Hull – tracks whether golf/flag-plant/weld was triggered from a hull state
         private bool _golfStartedFromHull;
         private bool _flagStartedFromHull;
+        public bool _constructionFromHull;
+        private bool _weldStartedFromHull;
 
         // KSP2 styled tuning
         public float GroundSpherecastUpOffset = SPHERECAST_UP_OFFSET_DEFAULT;
@@ -211,7 +213,11 @@ namespace G3MagnetBoots
                 FSM.CurrentState == st_jump_hull ||
                 (FSM.CurrentState == Kerbal?.st_playing_golf && _golfStartedFromHull) ||
                 (FSM.CurrentState == Kerbal?.st_flagAcquireHeading && _flagStartedFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_flagPlant && _flagStartedFromHull)
+                (FSM.CurrentState == Kerbal?.st_flagPlant && _flagStartedFromHull) ||
+                (FSM.CurrentState == Kerbal?.st_enteringConstruction && _constructionFromHull) ||
+                (FSM.CurrentState == Kerbal?.st_exitingConstruction && _constructionFromHull) ||
+                (FSM.CurrentState == Kerbal?.st_weldAcquireHeading && _constructionFromHull) ||
+                (FSM.CurrentState == Kerbal?.st_weld && _constructionFromHull)
             );
 
         public bool FlagStartedFromHull => _flagStartedFromHull;
@@ -494,6 +500,49 @@ namespace G3MagnetBoots
             // Redirect golf completion back to st_idle_hull instead of the vanilla ground state
             Kerbal.On_Golf_Complete.OnEvent -= On_Golf_Complete_Hull_Redirect;
             Kerbal.On_Golf_Complete.OnEvent += On_Golf_Complete_Hull_Redirect;
+
+
+            // EVA Construction pipeline
+            FSM.AddEvent(Kerbal.On_constructionModeEnter, st_idle_hull);
+            FSM.AddEvent(Kerbal.On_constructionModeEnter, st_walk_hull);
+            FSM.AddEvent(Kerbal.On_constructionModeExit, st_idle_hull);
+            FSM.AddEvent(Kerbal.On_constructionModeExit, st_walk_hull);
+
+            Kerbal.st_enteringConstruction.OnFixedUpdate -= construction_hull_OnFixedUpdate;
+            Kerbal.st_enteringConstruction.OnFixedUpdate += construction_hull_OnFixedUpdate;
+            Kerbal.st_exitingConstruction.OnFixedUpdate -= construction_hull_OnFixedUpdate;
+            Kerbal.st_exitingConstruction.OnFixedUpdate += construction_hull_OnFixedUpdate;
+
+            Kerbal.On_constructionModeEnter.OnEvent -= On_ConstructionEnter_Hull_Hook;
+            Kerbal.On_constructionModeEnter.OnEvent += On_ConstructionEnter_Hull_Hook;
+            Kerbal.On_constructionModeExit.OnEvent -= On_ConstructionExit_Hull_Hook;
+            Kerbal.On_constructionModeExit.OnEvent += On_ConstructionExit_Hull_Hook;
+            Kerbal.On_constructionModeTrigger_fl_Complete.OnEvent -= On_ConstructionComplete_Hull_Redirect;
+            Kerbal.On_constructionModeTrigger_fl_Complete.OnEvent += On_ConstructionComplete_Hull_Redirect;
+            Kerbal.On_constructionModeTrigger_gr_Complete.OnEvent -= On_ConstructionComplete_Hull_Redirect;
+            Kerbal.On_constructionModeTrigger_gr_Complete.OnEvent += On_ConstructionComplete_Hull_Redirect;
+
+            // Welding on hull – allow weld to trigger from hull states
+            FSM.AddEvent(Kerbal.On_weldStart, st_idle_hull);
+            FSM.AddEvent(Kerbal.On_weldStart, st_walk_hull);
+
+            // Zero movement and set flag when weld is triggered from hull
+            Kerbal.On_weldStart.OnEvent -= On_weldStart_Hull_Hook;
+            Kerbal.On_weldStart.OnEvent += On_weldStart_Hull_Hook;
+
+            // Run hull grip physics during weld acquire-heading and weld animation
+            Kerbal.st_weldAcquireHeading.OnFixedUpdate -= weld_hull_OnFixedUpdate;
+            Kerbal.st_weldAcquireHeading.OnFixedUpdate += weld_hull_OnFixedUpdate;
+            Kerbal.st_weld.OnFixedUpdate -= weld_hull_OnFixedUpdate;
+            Kerbal.st_weld.OnFixedUpdate += weld_hull_OnFixedUpdate;
+
+            // Hull-relative heading update during weld acquire-heading
+            Kerbal.st_weldAcquireHeading.OnLateUpdate -= weldAcquireHeading_hull_OnLateUpdate;
+            Kerbal.st_weldAcquireHeading.OnLateUpdate += weldAcquireHeading_hull_OnLateUpdate;
+
+            // Redirect weld completion back to st_idle_hull
+            Kerbal.On_weldComplete.OnEvent -= On_weldComplete_Hull_Redirect;
+            Kerbal.On_weldComplete.OnEvent += On_weldComplete_Hull_Redirect;
         }
 
 
@@ -502,7 +551,7 @@ namespace G3MagnetBoots
         {
             if (!this.enabled || _inLetGoCooldown) return false;
 
-            RefreshHulLTarget_DoProbe();
+            RefreshHullTarget_DoProbe();
 
             if (!_hullTarget.IsValid()) return false;
 
@@ -651,6 +700,9 @@ namespace G3MagnetBoots
             tgtRpos = Vector3.zero;
             tgtSpeed = 0f;
             lastTgtSpeed = 0f;
+            currentSpd = 0f;
+            if (Part.rb != null)
+                Part.rb.angularVelocity = Vector3.zero;
         }
 
         private void On_Playing_Golf_Hull_Hook()
@@ -678,6 +730,89 @@ namespace G3MagnetBoots
             else
             {
                 Kerbal.On_Golf_Complete.GoToStateOnEvent = Kerbal.st_idle_gr;
+            }
+        }
+
+        private void construction_hull_OnFixedUpdate()
+        {
+            if (!_constructionFromHull) return;
+            RefreshHullTarget();
+            OrientToSurfaceNormal();
+            UpdateMovementOnVessel();
+
+            KerbalEVAAccess.CmdRot(Kerbal) = Vector3.zero;
+            updateRagdollVelocities();
+        }
+
+        private void On_ConstructionEnter_Hull_Hook()
+        {
+            if (FSM.CurrentState == st_idle_hull || FSM.CurrentState == st_walk_hull)
+            {
+                _constructionFromHull = true;
+                ZeroHullMovementForScience();
+            }
+        }
+
+        private void On_ConstructionExit_Hull_Hook()
+        {
+            if (!_constructionFromHull) return;
+            ZeroHullMovementForScience();
+        }
+
+        private void On_ConstructionComplete_Hull_Redirect()
+        {
+            if (_constructionFromHull)
+            {
+                Kerbal.On_constructionModeTrigger_fl_Complete.GoToStateOnEvent = st_idle_hull;
+                Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = st_idle_hull;
+
+                // Clear only when exiting construction mode, not entering
+                if (FSM.CurrentState == Kerbal.st_exitingConstruction)
+                    _constructionFromHull = false;
+            }
+            else
+            {
+                Kerbal.On_constructionModeTrigger_fl_Complete.GoToStateOnEvent = Kerbal.st_idle_fl;
+                Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = Kerbal.st_idle_gr;
+            }
+        }
+
+
+
+        private void On_weldStart_Hull_Hook()
+        {
+            if (FSM.CurrentState != st_idle_hull && FSM.CurrentState != st_walk_hull) return;
+            _weldStartedFromHull = true;
+            ZeroHullMovementForScience();
+        }
+
+        private void weld_hull_OnFixedUpdate()
+        {
+            if (!_constructionFromHull) return;
+            RefreshHullTarget();
+            OrientToSurfaceNormal();
+            UpdateMovementOnVessel();
+           
+            KerbalEVAAccess.CmdRot(Kerbal) = Vector3.zero;
+            updateRagdollVelocities();
+        }
+
+        private void weldAcquireHeading_hull_OnLateUpdate()
+        {
+            if (!_weldStartedFromHull) return;
+            UpdateHeading();
+        }
+
+        private void On_weldComplete_Hull_Redirect()
+        {
+            if (_weldStartedFromHull)
+            {
+                Kerbal.On_weldComplete.GoToStateOnEvent = st_idle_hull;
+                _weldStartedFromHull = false;
+            }
+            else
+            {
+                Kerbal.On_weldComplete.GoToStateOnEvent = Kerbal.st_idle_gr;
             }
         }
 
