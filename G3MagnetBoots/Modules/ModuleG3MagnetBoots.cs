@@ -80,6 +80,11 @@ namespace G3MagnetBoots
         // Camera Lock Constants
         internal const int OFF_HULL_FRAMES_TO_UNLOCK = 5;
 
+        // Hull Anchor Joint
+        private float _hullAnchorTimer;
+        private const float HULL_ANCHOR_DELAY = 0.25f;
+        private const float HULL_ANCHOR_MAX_DISTANCE_ERROR = 0.05f;
+
         private static G3MagnetBootsSettings Settings => G3MagnetBootsSettings.Current;
         private static G3MagnetBootsDifficultySettings DifficultySettings => G3MagnetBootsDifficultySettings.Current;
 
@@ -289,6 +294,15 @@ namespace G3MagnetBoots
 
             _inLetGoCooldown = false;
             HookAGGearButton();
+
+            GameEvents.onKerbalPassedOutFromGeeForce.Add(OnKerbalBlackedOut);
+            GameEvents.onKerbalInactiveChange.Add(OnKerbalInactiveChanged);
+        }
+
+        public void OnDestroy()
+        {
+            GameEvents.onKerbalPassedOutFromGeeForce.Remove(OnKerbalBlackedOut);
+            GameEvents.onKerbalInactiveChange.Remove(OnKerbalInactiveChanged);
         }
 
         public override void OnUpdate()
@@ -345,9 +359,13 @@ namespace G3MagnetBoots
             st_idle_hull.OnFixedUpdate += OrientToSurfaceNormal;
             st_idle_hull.OnFixedUpdate += UpdateMovementOnVessel;
             st_idle_hull.OnFixedUpdate += UpdateHeading;
+            st_idle_hull.OnFixedUpdate += TryAddHullAnchor;
             st_idle_hull.OnFixedUpdate += UpdatePackLinear;
             st_idle_hull.OnFixedUpdate += updateRagdollVelocities;
             st_idle_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
+            st_idle_hull.OnFixedUpdate += ValidateHullAnchor;
+            //st_idle_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
+            st_idle_hull.OnLeave = _ => RemoveHullAnchor();
             FSM.AddState(st_idle_hull);
 
             FSM.AddEvent(Kerbal.On_packToggle, st_idle_hull);
@@ -396,6 +414,12 @@ namespace G3MagnetBoots
             st_walk_hull.OnFixedUpdate += UpdatePackLinear;
             st_walk_hull.OnFixedUpdate += updateRagdollVelocities;
             st_walk_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
+            //st_walk_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
+            st_walk_hull.OnEnter = _ =>
+            {
+                SnapToHullPad();
+                RemoveHullAnchor();
+            };
             st_walk_hull.OnLeave = walk_hull_OnLeave;
             FSM.AddState(st_walk_hull);
 
@@ -437,6 +461,7 @@ namespace G3MagnetBoots
             st_jump_hull.OnFixedUpdate = UpdateMovementOnVessel;
             st_jump_hull.OnFixedUpdate += UpdateHeading;
             st_jump_hull.OnFixedUpdate += updateRagdollVelocities;
+            //st_jump_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
             FSM.AddState(st_jump_hull);
 
             On_jump_hull = new KFSMEvent("Jump (On Hull)");
@@ -544,7 +569,128 @@ namespace G3MagnetBoots
             Kerbal.On_weldComplete.OnEvent += On_weldComplete_Hull_Redirect;
         }
 
+        private ConfigurableJoint _hullAnchorJoint;
 
+        private void TryAddHullAnchor()
+        {
+            if (_hullAnchorJoint != null) return;
+            if (FSM.CurrentState != st_idle_hull) return;
+            if (!_hullTarget.IsValid()) return;
+
+            if (PartHasMovingColliderRisk(_hullTarget.part))
+            {
+                _hullAnchorTimer = 0f;
+                return;
+            }
+
+            if (tgtRpos != Vector3.zero)
+            {
+                _hullAnchorTimer = 0f;
+                return;
+            }
+
+            _hullAnchorTimer += Time.fixedDeltaTime;
+            if (_hullAnchorTimer < HULL_ANCHOR_DELAY) return;
+
+            SnapToHullPad();
+            AddHullAnchor();
+        }
+
+        private void AddHullAnchor()
+        {
+            if (_hullAnchorJoint != null) return;
+            if (!_hullTarget.IsValid()) return;
+            if (Part.rb == null || _hullTarget.rigidbody == null) return;
+
+            var j = Part.rb.gameObject.AddComponent<ConfigurableJoint>();
+            j.connectedBody = _hullTarget.rigidbody;
+            j.autoConfigureConnectedAnchor = true;
+
+            j.xMotion = ConfigurableJointMotion.Locked;
+            j.yMotion = ConfigurableJointMotion.Locked;
+            j.zMotion = ConfigurableJointMotion.Locked;
+
+            j.angularXMotion = ConfigurableJointMotion.Locked;
+            j.angularYMotion = ConfigurableJointMotion.Locked;
+            j.angularZMotion = ConfigurableJointMotion.Locked;
+
+            j.enableCollision = false;
+            j.breakForce = Mathf.Infinity;
+            j.breakTorque = Mathf.Infinity;
+
+            //j.projectionMode = JointProjectionMode.None;
+
+            j.projectionMode = JointProjectionMode.PositionAndRotation;
+            j.projectionDistance = 0.02f;
+            j.projectionAngle = 3f;
+
+            j.massScale = 10f;
+            j.connectedMassScale = 1f;
+
+            _hullAnchorJoint = j;
+            
+            Logger.Debug($"[Anchor] Created joint with break force {_hullAnchorJoint.breakForce} and break torque {_hullAnchorJoint.breakTorque}");
+        }
+
+        private void SnapToHullPad()
+        {
+            if (!_hullTarget.IsValid() || Part.rb == null) return;
+
+            Vector3 normal = _hullTarget.hitNormal.normalized;
+            float error = FootHullPad - _hullTarget.hitDistance;
+
+            if (error > 0f)
+                Part.rb.position += normal * error;
+        }
+
+        private bool PartHasMovingColliderRisk(Part p)
+        {
+            if (p == null) return false;
+
+            for (int i = 0; i < p.Modules.Count; i++)
+            {
+                PartModule m = p.Modules[i];
+
+                if (m is IScalarModule scalar && scalar.IsMoving())
+                    return true;
+
+                if (m is ModuleAnimateGeneric anim &&
+                    anim.aniState == ModuleAnimateGeneric.animationStates.MOVING)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private void RemoveHullAnchor()
+        {
+            if (_hullAnchorJoint != null)
+            {
+                Logger.Debug("[Anchor] Removed joint");
+                UnityEngine.Object.Destroy(_hullAnchorJoint);
+            }
+
+            _hullAnchorJoint = null;
+            _hullAnchorTimer = 0f;
+        }
+
+        private void ValidateHullAnchor()
+        {
+            if (_hullAnchorJoint == null) return;
+
+            if (!_hullTarget.IsValid())
+            {
+                ClearHullTarget();
+                return;
+            }
+
+            if (PartHasMovingColliderRisk(_hullTarget.part))
+            {
+                Logger.Debug("[Anchor] Releasing: target part has moving collider risk");
+                RemoveHullAnchor();
+                return;
+            }
+        }
 
         protected virtual bool ShouldEnterHullIdle()
         {
@@ -572,6 +718,7 @@ namespace G3MagnetBoots
             _hullTarget = default;
             _hullTransform = null;
             _surfaceVelCount = 0;
+            RemoveHullAnchor();
         }
 
 
@@ -606,6 +753,9 @@ namespace G3MagnetBoots
                 _hullTransform = _hullTarget.part.transform;
                 _localHullForward = _hullTransform.InverseTransformDirection(Part.rb.transform.forward); //
             }
+
+            RemoveHullAnchor();
+            _hullAnchorTimer = 0f;
         }
 
         // Stock-alike but using the Kerbal-relative coordinate frame
@@ -672,6 +822,7 @@ namespace G3MagnetBoots
                 Kerbal.Animations.JumpFwdStart.State.time = Kerbal.Animations.JumpFwdStart.start;
                 _animation.CrossFade(Kerbal.Animations.JumpFwdStart, ANIMATION_CROSSFADE_TIME, PlayMode.StopAll);
             }
+            RemoveHullAnchor();
         }
         protected virtual void jump_hull_Completed()
         {
@@ -911,6 +1062,7 @@ namespace G3MagnetBoots
             _inLetGoCooldown = true;
             SetEnabled(false);
             ClearHullTarget();
+            RemoveHullAnchor();
             ApplyLetGoImpulse();
             Kerbal.StartCoroutine(On_letGo_Coroutine(LET_GO_COOLDOWN_TIME));
             Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_LETGO));
@@ -984,6 +1136,7 @@ namespace G3MagnetBoots
         protected virtual void UpdateHeading()
         {
             if (base.vessel.packed || !_hullTarget.IsValid()) return;
+            if (_hullAnchorJoint != null) return;
 
             var rb = Part.rb;
             if (rb == null) return;
@@ -1039,6 +1192,7 @@ namespace G3MagnetBoots
         private void OrientToSurfaceNormal()
         {
             if (base.vessel.packed || !_hullTarget.IsValid()) return;
+            if (_hullAnchorJoint != null) return;
 
             var rb = Part.rb;
             if (rb == null) return;
@@ -1077,6 +1231,16 @@ namespace G3MagnetBoots
         protected virtual void UpdateMovementOnVessel() // Stock-alike custom implementation replacing updateMovementOnVessel() which uses the scene-fixed coordinate frame
         {
             if (base.vessel.packed || !_hullTarget.IsValid()) return;
+
+            if (_hullAnchorJoint != null)
+            {
+                // Just inherit hull motion
+                //var rb = Part.rb;
+                //if (rb != null && _hullTarget.rigidbody != null)
+                //    rb.velocity = _hullTarget.rigidbody.velocity;
+
+                return;
+            }
 
             float num = (float)FSM.TimeAtCurrentState;
             num = ((num >= 0.3f) ? 1f : ((!(num > 0f)) ? 0f : (num * 3.3333333f)));
@@ -1194,5 +1358,38 @@ namespace G3MagnetBoots
             tFwd = fwd;
             tRight = right;
         }
+
+        private void OnKerbalBlackedOut(ProtoCrewMember kerbal)
+        {
+            if (kerbal == null) return;
+            if (Crew != null && kerbal != Crew) return;
+
+            Logger.Debug($"[G] {kerbal.name} passed out from G-force");
+
+            RemoveHullAnchor();
+            ClearHullTarget();
+
+            // Optional: force detach/floating state if needed.
+            Kerbal.fsm.RunEvent(On_detachFromHull);
+        }
+
+        private void OnKerbalInactiveChanged(ProtoCrewMember kerbal, bool wasInactive, bool nowInactive)
+        {
+            if (kerbal == null) return;
+            if (Crew != null && kerbal != Crew) return;
+
+            if (nowInactive && kerbal.outDueToG)
+            {
+                Logger.Debug($"[G] {kerbal.name} became inactive due to G-force");
+
+                RemoveHullAnchor();
+                ClearHullTarget();
+            }
+            else if (!nowInactive && !kerbal.outDueToG)
+            {
+                Logger.Debug($"[G] {kerbal.name} woke up");
+            }
+        }
+
     }
 }
