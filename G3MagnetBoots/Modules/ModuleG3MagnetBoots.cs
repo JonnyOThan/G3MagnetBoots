@@ -696,6 +696,7 @@ namespace G3MagnetBoots
         // Helper: zero Kerbal movement state when triggering EVA science from a hull state.
         private void ZeroHullMovementForScience()
         {
+            tgtFwd = Vector3.zero;
             tgtRpos = Vector3.zero;
             tgtSpeed = 0f;
             lastTgtSpeed = 0f;
@@ -734,9 +735,7 @@ namespace G3MagnetBoots
 
         private void UpdateConstructionFromHullFlag()
         {
-            bool inHullState =
-                FSM.CurrentState == st_idle_hull ||
-                FSM.CurrentState == st_walk_hull;
+            bool inHullState = FSM.CurrentState == st_idle_hull || FSM.CurrentState == st_walk_hull;
 
             bool inConstructionTransition =
                 FSM.CurrentState == Kerbal.st_enteringConstruction ||
@@ -748,7 +747,7 @@ namespace G3MagnetBoots
             {
                 _constructionFromHull = true;
             }
-            else if (!Kerbal.InConstructionMode || (!inHullState && !inConstructionTransition))
+            else if (!inHullState && !inConstructionTransition)
             {
                 _constructionFromHull = false;
             }
@@ -784,8 +783,14 @@ namespace G3MagnetBoots
         private void On_ConstructionExit_Hull_Hook()
         {
             Logger.Debug($"[Construction] Exit hook  currentState={CurrentFSMStateName}  constructionFromHull={_constructionFromHull}");
-            if (!_constructionFromHull) return;
             ZeroHullMovementForScience();
+            if (_constructionFromHull && FSM.CurrentState == Kerbal.st_exitingConstruction)
+            {
+                Kerbal.On_constructionModeTrigger_fl_Complete.GoToStateOnEvent = st_idle_hull;
+                Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = st_idle_hull;
+                _constructionFromHull = false;
+            }
+            
         }
 
         private void On_ConstructionComplete_Hull_Redirect()
@@ -814,19 +819,23 @@ namespace G3MagnetBoots
 
         private void On_weldStart_Hull_Hook()
         {
-            Logger.Debug($"[Weld] Start hook  currentState={CurrentFSMStateName}  weldStartedFromHull={_weldStartedFromHull}  constructionFromHull={_constructionFromHull}");
-            if (FSM.CurrentState != st_idle_hull && FSM.CurrentState != st_walk_hull)
+            bool fromHull =
+                FSM.CurrentState == st_idle_hull ||
+                FSM.CurrentState == st_walk_hull ||
+                _constructionFromHull ||
+                _hullTarget.IsValid();
+
+            Logger.Debug($"[Weld] Start hook currentState={CurrentFSMStateName} fromHull={fromHull} hullValid={_hullTarget.IsValid()} constructionFromHull={_constructionFromHull}");
+
+            if (!fromHull)
             {
                 _weldStartedFromHull = false;
-                _constructionFromHull = false; // critical
-                Logger.Debug("[Weld] Start hook SKIPPED; cleared stale constructionFromHull");
                 return;
             }
 
             _weldStartedFromHull = true;
             _constructionFromHull = true;
             ZeroHullMovementForScience();
-            Logger.Debug($"[Weld] Start hook SET  weldStartedFromHull=true");
         }
 
         private void weld_hull_OnFixedUpdate()
@@ -848,18 +857,20 @@ namespace G3MagnetBoots
 
         private void On_weldComplete_Hull_Redirect()
         {
-            Logger.Debug($"[Weld] Complete redirect  currentState={CurrentFSMStateName}  weldStartedFromHull={_weldStartedFromHull}");
-            if (_weldStartedFromHull)
-            {
-                Kerbal.On_weldComplete.GoToStateOnEvent = st_idle_hull;
-                _weldStartedFromHull = false;
-                Logger.Debug($"[Weld] Complete redirect -> st_idle_hull, cleared weldStartedFromHull");
-            }
-            else
-            {
-                Kerbal.On_weldComplete.GoToStateOnEvent = Kerbal.st_idle_gr;
-                Logger.Debug($"[Weld] Complete redirect -> st_idle_gr (not from hull)");
-            }
+            bool shouldReturnToHull =
+                _weldStartedFromHull ||
+                _constructionFromHull ||
+                _hullTarget.IsValid();
+
+            Logger.Debug($"[Weld] Complete redirect currentState={CurrentFSMStateName} shouldReturnToHull={shouldReturnToHull} weldStartedFromHull={_weldStartedFromHull} constructionFromHull={_constructionFromHull} hullValid={_hullTarget.IsValid()}");
+
+            Kerbal.On_weldComplete.GoToStateOnEvent =
+                shouldReturnToHull ? st_idle_hull : Kerbal.st_idle_gr;
+
+            _weldStartedFromHull = false;
+
+            if (!shouldReturnToHull)
+                _constructionFromHull = false;
         }
 
         private void On_flagPlantStart_Hull_Hook()
@@ -1019,7 +1030,7 @@ namespace G3MagnetBoots
                 int num = Kerbal.ragdollNodes.Length;
                 while (num-- > 0)
                 {
-                    Kerbal.ragdollNodes[num].updateVelocity(base.transform.position, base.part.rb.velocity, 1f / Time.fixedDeltaTime);
+                    //Kerbal.ragdollNodes[num].updateVelocity(base.transform.position, base.part.rb.velocity, 1f / Time.fixedDeltaTime);
                 }
             }
         }
@@ -1035,65 +1046,6 @@ namespace G3MagnetBoots
             Vector3 upN = _hullTarget.hitNormal;
             fUp = upN;
 
-            /*
-            if (_viz != null && _viz.Enabled)
-            {
-                _viz.BeginFrame();
-
-                if (Kerbal.footPivot != null) 
-                { 
-                    // Contact point + normal is YELLOW
-                    _viz.Sphere("hitPoint", _hullTarget.hitPoint, 0.05f, Color.yellow, 0.20f);
-                    _viz.Line("hitNormal",
-                        _hullTarget.hitPoint,
-                        _hullTarget.hitPoint + _hullTarget.hitNormal.normalized,
-                        Color.yellow, 0.02f);
-
-                    // Kerbal up (fUp) is RED
-                    var kerbalPos = Part.rb != null ? Part.rb.worldCenterOfMass : Kerbal.transform.position;
-                    _viz.Line("fUp",
-                        kerbalPos,
-                        kerbalPos + fUp.normalized,
-                        Color.red, 0.02f);
-
-                    // Current forward projected on plane is BLUE
-                    if (Part.rb != null)
-                    {
-                        var curFwd = Vector3.ProjectOnPlane(Part.rb.rotation * Vector3.forward, fUp);
-                        if (curFwd.sqrMagnitude > 1e-6f)
-                        {
-                            curFwd.Normalize();
-                            _viz.Line("curFwd",
-                                kerbalPos,
-                                kerbalPos + curFwd * 0.7f,
-                                Color.blue, 0.02f);
-                        }
-                    }
-
-                    // Relative velocity to hull point is ORANGE
-                    if (Part.rb != null)
-                    {
-                        var surfaceVel = HullTargeting.GetSurfacePointVelocity(_hullTarget);
-                        var relVel = Part.rb.velocity - surfaceVel;
-                        if (relVel.sqrMagnitude > 1e-6f)
-                        {
-                            var rv = relVel.normalized * 0.4f;
-                            _viz.Line("relVel",
-                                _hullTarget.hitPoint,
-                                _hullTarget.hitPoint + rv,
-                                new Color(1f, 0.5f, 0f, 0.05f), 0.02f); // orange
-                        }
-                    }
-                }
-
-                // Spherecast origin + radius
-                bool originInsideAny = Physics.CheckSphere(Kerbal.footPivot.position + (Kerbal.transform.up * GroundSpherecastUpOffset), GroundSpherecastRadius * 0.98f, HullTargeting.HullMask, QueryTriggerInteraction.Ignore);
-                _viz.Sphere("sphereOrigin", _hullTarget.debugSphereOrigin, _hullTarget.debugSphereRadius, originInsideAny ? new Color(1f, 0f, 0f, 0.15f) : new Color(0f, 1f, 1f, 0.15f), 0.05f);
-
-                _viz.EndFrame();
-            }
-            */
-
             Vector3 fwdWorld;
             if (_localHullForward.sqrMagnitude > VECTOR_ZERO_THRESHOLD)
                 fwdWorld = _hullTransform.TransformDirection(_localHullForward); // forward follows hull rotation
@@ -1103,11 +1055,6 @@ namespace G3MagnetBoots
             Vector3 fwd = Vector3.ProjectOnPlane(fwdWorld, fUp);
             if (fwd.sqrMagnitude < VECTOR_ZERO_THRESHOLD) return;
             fwd.Normalize();
-            /*
-            // Preserve current heading, only tilt to match the surface normal
-            Vector3 fwd = Vector3.ProjectOnPlane(rb.rotation * Vector3.forward, fUp);
-            fwd.Normalize();
-            */
 
             Quaternion targetRot = Quaternion.LookRotation(fwd, fUp);
             Quaternion newRot = Quaternion.RotateTowards(
@@ -1177,57 +1124,6 @@ namespace G3MagnetBoots
 
                 vRelT = vRelTNew;
             }
-
-
-            /*
-            // after computing vRelT and desiredTangentVel...
-            bool idle = tgtRpos.sqrMagnitude < VECTOR_ZERO_THRESHOLD || desiredTangentVel.sqrMagnitude < VECTOR_ZERO_THRESHOLD;
-            if (idle)
-            {
-                // Hard static friction: kill tangential relative velocity completely
-                vRelT = Vector3.zero;
-            }
-            else
-            {
-                // Walking: converge toward desiredTangentVel with traction limit
-                Vector3 slip = vRelT - desiredTangentVel;
-                float slipMag = slip.magnitude;
-                if (slipMag > VECTOR_ZERO_THRESHOLD)
-                {
-                    float maxDv = (Settings.magbootsStaticFrictionForce / Mathf.Max(rb.mass, 1e-6f)) * dt;
-                    if (slipMag <= maxDv) vRelT = desiredTangentVel;
-                    else vRelT -= slip * (maxDv / slipMag);
-                }
-                else vRelT = desiredTangentVel;
-            }
-            */
-            /*
-            Vector3 slip = vRelT - desiredTangentVel; // what friction must remove
-            float slipMag = slip.magnitude;
-
-
-
-            if (slipMag > VECTOR_ZERO_THRESHOLD)
-            {
-                float maxDv = (Settings.magbootsStaticFrictionForce / Mathf.Max(rb.mass, VECTOR_ZERO_THRESHOLD)) * dt;
-
-                if (slipMag <= maxDv)
-                {
-                    // Static friction can fully cancel slip this frame:
-                    vRelT = desiredTangentVel;
-                }
-                else
-                {
-                    // Not enough traction this frame: reduce slip as much as possible
-                    vRelT = vRelT - slip.normalized * maxDv;
-                }
-            }
-            else
-            {
-                // Close enough; snap to target to prevent jitter creep
-                vRelT = desiredTangentVel;
-            }
-            */
 
             // set new world velocity
             Vector3 vRelNew = vRelT + vRelNNew;
