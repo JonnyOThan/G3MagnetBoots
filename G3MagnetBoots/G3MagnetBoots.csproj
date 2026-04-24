@@ -47,6 +47,7 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="EVACameraPatch.cs" />
+    <Compile Include="FSMDebugger.cs" />
     <Compile Include="VesselUtils.cs" />
     <Compile Include="G3MagnetBoots.cs" />
     <Compile Include="G3MagnetBootsSettings.cs" />

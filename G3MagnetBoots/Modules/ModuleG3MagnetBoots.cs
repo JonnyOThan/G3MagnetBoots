@@ -106,10 +106,10 @@ namespace G3MagnetBoots
         private KFSMTimedEvent On_jump_hull_completed; // st_jump_hull -> st_idle_fl
 
         // EVA science on Hull – tracks whether golf/flag-plant/weld was triggered from a hull state
-        private bool _golfStartedFromHull;
-        private bool _flagStartedFromHull;
+        public bool _golfStartedFromHull;
+        public bool _flagStartedFromHull;
         public bool _constructionFromHull;
-        private bool _weldStartedFromHull;
+        public bool _weldStartedFromHull;
 
         // KSP2 styled tuning
         public float GroundSpherecastUpOffset = SPHERECAST_UP_OFFSET_DEFAULT;
@@ -287,10 +287,6 @@ namespace G3MagnetBoots
             base.OnStart(state);
             if (!HighLogic.LoadedSceneIsFlight) return;
 
-            //_viz = new("MagBootsPoC_DebugViz");
-            //_viz.Create();
-            //_viz.Enabled = Viz;
-
             _inLetGoCooldown = false;
             HookAGGearButton();
         }
@@ -326,6 +322,7 @@ namespace G3MagnetBoots
             try
             {
                 SetupFSM();
+                FSMDebugger.Attach(eva);
             }
             catch (Exception ex)
             {
@@ -350,6 +347,7 @@ namespace G3MagnetBoots
             st_idle_hull.OnFixedUpdate += UpdateHeading;
             st_idle_hull.OnFixedUpdate += UpdatePackLinear;
             st_idle_hull.OnFixedUpdate += updateRagdollVelocities;
+            st_idle_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
             FSM.AddState(st_idle_hull);
 
             FSM.AddEvent(Kerbal.On_packToggle, st_idle_hull);
@@ -397,6 +395,7 @@ namespace G3MagnetBoots
             st_walk_hull.OnFixedUpdate += UpdateHeading;
             st_walk_hull.OnFixedUpdate += UpdatePackLinear;
             st_walk_hull.OnFixedUpdate += updateRagdollVelocities;
+            st_walk_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
             st_walk_hull.OnLeave = walk_hull_OnLeave;
             FSM.AddState(st_walk_hull);
 
@@ -733,8 +732,31 @@ namespace G3MagnetBoots
             }
         }
 
+        private void UpdateConstructionFromHullFlag()
+        {
+            bool inHullState =
+                FSM.CurrentState == st_idle_hull ||
+                FSM.CurrentState == st_walk_hull;
+
+            bool inConstructionTransition =
+                FSM.CurrentState == Kerbal.st_enteringConstruction ||
+                FSM.CurrentState == Kerbal.st_exitingConstruction ||
+                FSM.CurrentState == Kerbal.st_weldAcquireHeading ||
+                FSM.CurrentState == Kerbal.st_weld;
+
+            if (Kerbal.InConstructionMode && inHullState)
+            {
+                _constructionFromHull = true;
+            }
+            else if (!Kerbal.InConstructionMode || (!inHullState && !inConstructionTransition))
+            {
+                _constructionFromHull = false;
+            }
+        }
+
         private void construction_hull_OnFixedUpdate()
         {
+            UpdateConstructionFromHullFlag();
             if (!_constructionFromHull) return;
             RefreshHullTarget();
             OrientToSurfaceNormal();
@@ -746,34 +768,45 @@ namespace G3MagnetBoots
 
         private void On_ConstructionEnter_Hull_Hook()
         {
+            Logger.Debug($"[Construction] Enter hook  currentState={CurrentFSMStateName}  constructionFromHull={_constructionFromHull}");
             if (FSM.CurrentState == st_idle_hull || FSM.CurrentState == st_walk_hull)
             {
                 _constructionFromHull = true;
                 ZeroHullMovementForScience();
+                Logger.Debug($"[Construction] Enter hook SET  constructionFromHull=true");
+            }
+            else
+            {
+                Logger.Debug($"[Construction] Enter hook SKIPPED (not on hull state)");
             }
         }
 
         private void On_ConstructionExit_Hull_Hook()
         {
+            Logger.Debug($"[Construction] Exit hook  currentState={CurrentFSMStateName}  constructionFromHull={_constructionFromHull}");
             if (!_constructionFromHull) return;
             ZeroHullMovementForScience();
         }
 
         private void On_ConstructionComplete_Hull_Redirect()
         {
-            if (_constructionFromHull)
+            Logger.Debug($"[Construction] Complete redirect  currentState={CurrentFSMStateName}  constructionFromHull={_constructionFromHull}");
+            if (_constructionFromHull && FSM.CurrentState == Kerbal.st_exitingConstruction)
             {
+                // Exiting construction from hull: redirect back to hull idle
                 Kerbal.On_constructionModeTrigger_fl_Complete.GoToStateOnEvent = st_idle_hull;
                 Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = st_idle_hull;
-
-                // Clear only when exiting construction mode, not entering
-                if (FSM.CurrentState == Kerbal.st_exitingConstruction)
-                    _constructionFromHull = false;
+                _constructionFromHull = false;
+                Logger.Debug($"[Construction] Complete redirect -> st_idle_hull, cleared constructionFromHull");
             }
             else
             {
+                // Entering construction (or not from hull): restore stock destinations so the
+                // construction-mode idle state is reached normally instead of looping back to
+                // st_idle_hull while construction mode is still active.
                 Kerbal.On_constructionModeTrigger_fl_Complete.GoToStateOnEvent = Kerbal.st_idle_fl;
                 Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = Kerbal.st_idle_gr;
+                Logger.Debug($"[Construction] Complete redirect -> stock destinations (fl/gr)  constructionFromHull={_constructionFromHull}");
             }
         }
 
@@ -781,18 +814,28 @@ namespace G3MagnetBoots
 
         private void On_weldStart_Hull_Hook()
         {
-            if (FSM.CurrentState != st_idle_hull && FSM.CurrentState != st_walk_hull) return;
+            Logger.Debug($"[Weld] Start hook  currentState={CurrentFSMStateName}  weldStartedFromHull={_weldStartedFromHull}  constructionFromHull={_constructionFromHull}");
+            if (FSM.CurrentState != st_idle_hull && FSM.CurrentState != st_walk_hull)
+            {
+                _weldStartedFromHull = false;
+                _constructionFromHull = false; // critical
+                Logger.Debug("[Weld] Start hook SKIPPED; cleared stale constructionFromHull");
+                return;
+            }
+
             _weldStartedFromHull = true;
+            _constructionFromHull = true;
             ZeroHullMovementForScience();
+            Logger.Debug($"[Weld] Start hook SET  weldStartedFromHull=true");
         }
 
         private void weld_hull_OnFixedUpdate()
         {
-            if (!_constructionFromHull) return;
+            if (!_weldStartedFromHull) return;
             RefreshHullTarget();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
-           
+
             KerbalEVAAccess.CmdRot(Kerbal) = Vector3.zero;
             updateRagdollVelocities();
         }
@@ -805,14 +848,17 @@ namespace G3MagnetBoots
 
         private void On_weldComplete_Hull_Redirect()
         {
+            Logger.Debug($"[Weld] Complete redirect  currentState={CurrentFSMStateName}  weldStartedFromHull={_weldStartedFromHull}");
             if (_weldStartedFromHull)
             {
                 Kerbal.On_weldComplete.GoToStateOnEvent = st_idle_hull;
                 _weldStartedFromHull = false;
+                Logger.Debug($"[Weld] Complete redirect -> st_idle_hull, cleared weldStartedFromHull");
             }
             else
             {
                 Kerbal.On_weldComplete.GoToStateOnEvent = Kerbal.st_idle_gr;
+                Logger.Debug($"[Weld] Complete redirect -> st_idle_gr (not from hull)");
             }
         }
 

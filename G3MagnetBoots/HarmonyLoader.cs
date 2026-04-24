@@ -58,8 +58,55 @@ namespace G3MagnetBoots
 
             var velMatch = __instance.part?.FindModuleImplementing<ModuleG3VelocityMatch>();
             velMatch?.HookIntoEva(__instance);
+
+            BlockStockConstructionMovementEvents(__instance);
+        }
+
+        private static void BlockStockConstructionMovementEvents(KerbalEVA eva)
+        {
+            WrapMoveEvent(eva, eva.On_MoveLowG_Acd);
+            WrapMoveEvent(eva, eva.On_MoveLowG_fps);
+
+            // Optional but recommended: these normal-gravity events are also registered
+            // on st_enteringConstruction and st_exitingConstruction.
+            WrapMoveEvent(eva, eva.On_MoveAcd);
+            WrapMoveEvent(eva, eva.On_MoveFPS);
+        }
+
+        private static void WrapMoveEvent(KerbalEVA eva, KFSMEvent evt)
+        {
+            if (eva == null || evt == null || evt.OnCheckCondition == null)
+                return;
+
+            var original = evt.OnCheckCondition;
+
+            evt.OnCheckCondition = st =>
+            {
+                try
+                {
+                    var boots = eva.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+
+                    if (boots != null && (boots.IsOnHull || boots._constructionFromHull))
+                    {
+                        // Only suppress while stock construction transition states are active.
+                        // This avoids disabling normal EVA movement elsewhere.
+                        if (eva.fsm?.CurrentState == eva.st_enteringConstruction ||
+                            eva.fsm?.CurrentState == eva.st_exitingConstruction)
+                        {
+                            return false;
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Logger.Exception(ex);
+                }
+
+                return original(st);
+            };
         }
     }
+
 
     // Postfix HandleMovementInput so our thrust contribution is added to packTgtRPos after player input, before fsm.FixedUpdateFSM() calls UpdatePackLinear. This routes velocity match thrust through the full stock pipeline: UpdatePackLinear -> packLinear -> AddForce + fuelFlowRate -> JetpackIsThrusting -> FX + fuel drain.
     [HarmonyPatch(typeof(KerbalEVA), "HandleMovementInput")]
@@ -75,6 +122,13 @@ namespace G3MagnetBoots
             Vector3 contribution = velMatch.GetPackTgtRPosContribution(playerInput);
             if (contribution != Vector3.zero)
                 KerbalEVAAccess.PackTgtRPos(__instance) += contribution;
+
+            var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+
+            if (magBoots != null && magBoots._constructionFromHull && (__instance.fsm?.CurrentState == __instance.st_enteringConstruction || __instance.fsm?.CurrentState == __instance.st_exitingConstruction || __instance.fsm?.CurrentState == __instance.st_weld) || EVAConstructionModeController.MovementRestricted)
+            {
+                KerbalEVAAccess.TgtRpos(__instance) = Vector3.zero;
+            }
         }
     }
 
@@ -109,6 +163,23 @@ namespace G3MagnetBoots
         }
     }
 
+    [HarmonyPatch(typeof(KerbalEVA), "SurfaceContact")]
+    internal static class Patch_KerbalEVA_SurfaceContact
+    {
+        static bool Prefix(KerbalEVA __instance, ref bool __result)
+        {
+            var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+
+            if (magBoots != null && (magBoots.IsOnHull || magBoots._constructionFromHull || magBoots._weldStartedFromHull))
+            {
+                __result = false;
+                return false;
+            }
+
+            return true;
+        }
+    }
+
     // Construction
     [HarmonyPatch(typeof(KerbalEVA), "weld_OnEnter")]
     internal static class Patch_KerbalEVA_weld_OnEnter
@@ -116,6 +187,7 @@ namespace G3MagnetBoots
         static bool Prefix(KerbalEVA __instance)
         {
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+            Logger.Debug($"[Weld] weld_OnEnter  hullValid={magBoots?.HullTargetIsValid}  constructionFromHull={magBoots?._constructionFromHull}  state={magBoots?.CurrentFSMStateName}");
             if (magBoots?.HullTargetIsValid != true) return true;
             if (!magBoots._constructionFromHull) return true;
 
@@ -152,7 +224,9 @@ namespace G3MagnetBoots
         static bool Prefix(KerbalEVA __instance)
         {
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
-            return magBoots?.IsOnHull != true; // skip stock when on hull
+            bool onHull = magBoots?.IsOnHull == true;
+            if (onHull) Logger.Debug($"[Weld] weld_acquireHeading_OnFixedUpdate suppressed (IsOnHull=true)");
+            return !onHull; // skip stock when on hull
         }
     }
 
@@ -162,7 +236,9 @@ namespace G3MagnetBoots
         static bool Prefix(KerbalEVA __instance)
         {
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
-            return magBoots?.IsOnHull != true;
+            bool onHull = magBoots?.IsOnHull == true;
+            if (onHull) Logger.Debug($"[Weld] weld_acquireHeading_OnLateUpdate suppressed (IsOnHull=true)");
+            return !onHull;
         }
     }
 
@@ -173,6 +249,7 @@ namespace G3MagnetBoots
         {
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
             if (magBoots?.IsOnHull != true) return true;
+            Logger.Debug($"[Weld] weld_OnFixedUpdate  hull mode active  state={magBoots.CurrentFSMStateName}");
 
             // Run only the aim animation blend; skip rotation/movement stock logic
             var constructionTarget = KerbalEVAAccess.ConstructionTarget(__instance);
