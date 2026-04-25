@@ -58,8 +58,6 @@
     <Compile Include="KerbalEVAAccess.cs" />
     <Compile Include="Logger.cs" />
     <Compile Include="Modules\ModuleG3MagnetBoots.cs" />
-    <Compile Include="Modules\ModuleG3VelocityMatch.cs" />
-    <Compile Include="Modules\ModuleG3VelocityMatch_UI.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

@@ -56,9 +56,6 @@ namespace G3MagnetBoots
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
             magBoots?.HookIntoEva(__instance);
 
-            var velMatch = __instance.part?.FindModuleImplementing<ModuleG3VelocityMatch>();
-            velMatch?.HookIntoEva(__instance);
-
             BlockStockConstructionMovementEvents(__instance);
         }
 
@@ -108,57 +105,18 @@ namespace G3MagnetBoots
     }
 
 
-    // Postfix HandleMovementInput so our thrust contribution is added to packTgtRPos after player input, before fsm.FixedUpdateFSM() calls UpdatePackLinear. This routes velocity match thrust through the full stock pipeline: UpdatePackLinear -> packLinear -> AddForce + fuelFlowRate -> JetpackIsThrusting -> FX + fuel drain.
+    // Patch HandleMovementInput to suppress construction-mode movement when on hull.
     [HarmonyPatch(typeof(KerbalEVA), "HandleMovementInput")]
     internal static class Patch_KerbalEVA_HandleMovementInput
     {
         static void Postfix(KerbalEVA __instance)
         {
             if (__instance == null) return;
-            var velMatch = __instance.part?.FindModuleImplementing<ModuleG3VelocityMatch>();
-            if (velMatch == null) return;
-
-            Vector3 playerInput = KerbalEVAAccess.PackTgtRPos(__instance);
-            Vector3 contribution = velMatch.GetPackTgtRPosContribution(playerInput);
-            if (contribution != Vector3.zero)
-                KerbalEVAAccess.PackTgtRPos(__instance) += contribution;
-
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
 
             if (magBoots != null && magBoots._constructionFromHull && (__instance.fsm?.CurrentState == __instance.st_enteringConstruction || __instance.fsm?.CurrentState == __instance.st_exitingConstruction || __instance.fsm?.CurrentState == __instance.st_weld) || EVAConstructionModeController.MovementRestricted)
             {
                 KerbalEVAAccess.TgtRpos(__instance) = Vector3.zero;
-            }
-        }
-    }
-
-    // Track whether the current ToggleJetpack(bool) call originated from the public parameterless ToggleJetpack(), which is the player-facing API (keybind / UI). KSP stock code also calls ToggleJetpack(bool) directly during FSM transitions (swim, ladder, landing, etc.) — those are system-initiated and must NOT set _playerStowedJetpack, otherwise auto-deploy after hull jump / velocity match breaks.
-    [HarmonyPatch(typeof(KerbalEVA), "ToggleJetpack", new System.Type[0])]
-    internal static class Patch_KerbalEVA_ToggleJetpackPublic
-    {
-        internal static bool _fromPublicToggle;
-        static void Prefix() => _fromPublicToggle = true;
-        static void Postfix() => _fromPublicToggle = false;
-    }
-
-
-    // Only mark as player-stowed when the call came through the public parameterless overload (i.e. the player pressed the jetpack key). System stows are ignored. Deploys always clear the flag regardless of origin.
-    [HarmonyPatch(typeof(KerbalEVA), "ToggleJetpack", new[] { typeof(bool) })]
-    internal static class Patch_KerbalEVA_ToggleJetpack
-    {
-        static void Postfix(KerbalEVA __instance, bool packState)
-        {
-            if (__instance == null) return;
-            var velMatch = __instance.part?.FindModuleImplementing<ModuleG3VelocityMatch>();
-            if (velMatch == null) return;
-
-            if (packState)
-            {
-                velMatch.OnPlayerDeployedJetpack();  // clear intent
-            }
-            else if (Patch_KerbalEVA_ToggleJetpackPublic._fromPublicToggle)
-            {
-                velMatch.OnPlayerStowedJetpack();   // player only
             }
         }
     }

@@ -210,6 +210,25 @@ namespace G3MagnetBoots
         bool IsAGOn(KSPActionGroup g) => VesselUtils.IsAGOn(vessel, g);
         void SetAG(KSPActionGroup g, bool active) => VesselUtils.SetAG(vessel, g, active);
         void ToggleAG(KSPActionGroup g) => VesselUtils.ToggleAG(vessel, g);
+
+        // Call SetEngageDelay on ModuleG3VelocityMatch (separate assembly) via reflection so
+        // G3MagnetBoots has no hard compile-time dependency on G3VelocityMatch.
+        private void TrySetVelocityMatchEngageDelay(float seconds)
+        {
+            if (part == null) return;
+            foreach (PartModule pm in part.Modules)
+            {
+                if (pm.GetType().Name == "ModuleG3VelocityMatch")
+                {
+                    pm.GetType().GetMethod("SetEngageDelay",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
+                        null, new[] { typeof(float) }, null)
+                        ?.Invoke(pm, new object[] { seconds });
+                    return;
+                }
+            }
+        }
+
         public bool IsGearOn => IsAGOn(KSPActionGroup.Gear);
         public bool IsOnHull =>
             this.enabled && _hullTarget.IsValid() && (
@@ -477,7 +496,7 @@ namespace G3MagnetBoots
             On_jump_hull.OnEvent += delegate
             {
                 Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_JUMP));
-                part?.FindModuleImplementing<ModuleG3VelocityMatch>()?.SetEngageDelay(JETPACK_DEPLOY_DELAY_JUMP * 2f);
+                TrySetVelocityMatchEngageDelay(JETPACK_DEPLOY_DELAY_JUMP * 2f);
             };
             FSM.AddEvent(On_jump_hull, st_idle_hull, st_walk_hull);
 
@@ -1066,7 +1085,7 @@ namespace G3MagnetBoots
             ApplyLetGoImpulse();
             Kerbal.StartCoroutine(On_letGo_Coroutine(LET_GO_COOLDOWN_TIME));
             Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_LETGO));
-            part?.FindModuleImplementing<ModuleG3VelocityMatch>()?.SetEngageDelay(JETPACK_DEPLOY_DELAY_LETGO);
+            TrySetVelocityMatchEngageDelay(JETPACK_DEPLOY_DELAY_LETGO);
         }
 
         private IEnumerator On_letGo_Coroutine(float delay = 2.0f)
