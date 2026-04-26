@@ -316,12 +316,14 @@ namespace G3MagnetBoots
 
             GameEvents.onKerbalPassedOutFromGeeForce.Add(OnKerbalBlackedOut);
             GameEvents.onKerbalInactiveChange.Add(OnKerbalInactiveChanged);
+            GameEvents.onVesselGoOffRails.Add(OnVesselUnpacked);
         }
 
         public void OnDestroy()
         {
             GameEvents.onKerbalPassedOutFromGeeForce.Remove(OnKerbalBlackedOut);
             GameEvents.onKerbalInactiveChange.Remove(OnKerbalInactiveChanged);
+            GameEvents.onVesselGoOffRails.Remove(OnVesselUnpacked);
         }
 
         public override void OnUpdate()
@@ -375,6 +377,7 @@ namespace G3MagnetBoots
             st_idle_hull.updateMode = KFSMUpdateMode.FIXEDUPDATE;
             st_idle_hull.OnEnter = idle_hull_OnEnter;
             st_idle_hull.OnFixedUpdate = RefreshHullTarget;
+            st_idle_hull.OnFixedUpdate += UpdateSmoothedHullSurface;
             st_idle_hull.OnFixedUpdate += OrientToSurfaceNormal;
             st_idle_hull.OnFixedUpdate += UpdateMovementOnVessel;
             st_idle_hull.OnFixedUpdate += UpdateHeading;
@@ -404,7 +407,12 @@ namespace G3MagnetBoots
             On_detachFromHull.updateMode = KFSMUpdateMode.FIXEDUPDATE;
             On_detachFromHull.GoToStateOnEvent = Kerbal.st_idle_fl;
             On_detachFromHull.OnCheckCondition = _ => ShouldExitHullIdle();
+            On_detachFromHull.OnEvent = () =>
+            {
+                Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_LETGO));
+            };
             FSM.AddEvent(On_detachFromHull, st_idle_hull);
+
 
             On_letGo = new("Let go from Hull");
             On_letGo.updateMode = KFSMUpdateMode.FIXEDUPDATE;
@@ -425,6 +433,7 @@ namespace G3MagnetBoots
             st_walk_hull = new("Walk (On Hull)");
             st_walk_hull.updateMode = KFSMUpdateMode.FIXEDUPDATE;
             st_walk_hull.OnFixedUpdate = RefreshHullTarget;
+            st_walk_hull.OnFixedUpdate += UpdateSmoothedHullSurface;
             st_walk_hull.OnFixedUpdate += OrientToSurfaceNormal;
             st_walk_hull.OnFixedUpdate += UpdateHullInputTargets;
             st_walk_hull.OnFixedUpdate += walk_hull_OnUpdate;
@@ -647,7 +656,7 @@ namespace G3MagnetBoots
             j.connectedMassScale = 1f;
 
             _hullAnchorJoint = j;
-            
+
             Logger.Debug($"[Anchor] Created joint with break force {_hullAnchorJoint.breakForce} and break torque {_hullAnchorJoint.breakTorque}");
         }
 
@@ -655,11 +664,17 @@ namespace G3MagnetBoots
         {
             if (!_hullTarget.IsValid() || Part.rb == null) return;
 
-            Vector3 normal = _hullTarget.hitNormal.normalized;
-            float error = FootHullPad - _hullTarget.hitDistance;
+            Vector3 normal = _hullSmoothingValid ? _smoothedHullNormal : _hullTarget.hitNormal.normalized;
+            float dist = _hullSmoothingValid ? _smoothedHitDistance : _hullTarget.hitDistance;
+            float error = FootHullPad - dist;
 
             if (error > 0f)
-                Part.rb.position += normal * error;
+            {
+                Vector3 correction = normal * error;
+                Part.rb.position += correction;
+                // Cancel the implied phantom velocity the position jump created
+                Part.rb.velocity -= correction / Time.fixedDeltaTime;
+            }
         }
 
         private bool PartHasMovingColliderRisk(Part p)
@@ -737,6 +752,7 @@ namespace G3MagnetBoots
             _hullTarget = default;
             _hullTransform = null;
             _surfaceVelCount = 0;
+            _hullSmoothingValid = false;
             RemoveHullAnchor();
         }
 
@@ -886,6 +902,7 @@ namespace G3MagnetBoots
         {
             if (!_golfStartedFromHull) return;
             RefreshHullTarget();
+            UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
         }
@@ -928,6 +945,7 @@ namespace G3MagnetBoots
             UpdateConstructionFromHullFlag();
             if (!_constructionFromHull) return;
             RefreshHullTarget();
+            UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
 
@@ -960,7 +978,7 @@ namespace G3MagnetBoots
                 Kerbal.On_constructionModeTrigger_gr_Complete.GoToStateOnEvent = st_idle_hull;
                 _constructionFromHull = false;
             }
-            
+
         }
 
         private void On_ConstructionComplete_Hull_Redirect()
@@ -1012,6 +1030,7 @@ namespace G3MagnetBoots
         {
             if (!_weldStartedFromHull) return;
             RefreshHullTarget();
+            UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
 
@@ -1054,6 +1073,7 @@ namespace G3MagnetBoots
         {
             if (!_flagStartedFromHull) return;
             RefreshHullTarget();
+            UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
         }
@@ -1216,7 +1236,7 @@ namespace G3MagnetBoots
             var rb = Part.rb;
             if (rb == null) return;
 
-            Vector3 upN = _hullTarget.hitNormal;
+            Vector3 upN = _smoothedHullNormal;
             fUp = upN;
 
             Vector3 fwdWorld;
@@ -1239,8 +1259,14 @@ namespace G3MagnetBoots
             Vector3 pivot = rb.worldCenterOfMass;
             Quaternion delta = newRot * Quaternion.Inverse(rb.rotation);
 
+            Vector3 posBefore = rb.position;
             rb.MoveRotation(newRot);
             rb.MovePosition(pivot + (delta * (rb.position - pivot)));
+            Vector3 posAfter = rb.position; // MovePosition queues — read back next frame via this trick:
+
+            // Actually MovePosition is queued, so track manually:
+            Vector3 expectedPosDelta = (pivot + (delta * (posBefore - pivot))) - posBefore;
+            rb.velocity -= expectedPosDelta / Time.fixedDeltaTime;
 
             _localHullForward = _hullTransform.InverseTransformDirection(newRot * Vector3.forward); // update local hull forward after turning
         }
@@ -1288,7 +1314,7 @@ namespace G3MagnetBoots
             Vector3 vRelN = fUp * vn;
             Vector3 vRelT = vRel - vRelN;
 
-            float vnTarget = (_hullTarget.hitDistance > FootHullPad) ? (FootHullPad - _hullTarget.hitDistance) / dt : 0f;
+            float vnTarget = (_smoothedHitDistance > FootHullPad) ? (FootHullPad - _smoothedHitDistance) / dt : 0f;
             float dv = Mathf.Clamp(vnTarget - vn, -Settings.magbootsClampForce * dt, Settings.magbootsClampForce * dt);
 
             float vnNew = vn + dv;
@@ -1383,12 +1409,11 @@ namespace G3MagnetBoots
             if (kerbal == null) return;
             if (Crew != null && kerbal != Crew) return;
 
-            Logger.Debug($"[G] {kerbal.name} passed out from G-force");
+            Logger.Debug($"[G] {kerbal.name} passed out from G-force, detaching from hull");
 
             RemoveHullAnchor();
             ClearHullTarget();
 
-            // Optional: force detach/floating state if needed.
             Kerbal.fsm.RunEvent(On_detachFromHull);
         }
 
@@ -1399,16 +1424,229 @@ namespace G3MagnetBoots
 
             if (nowInactive && kerbal.outDueToG)
             {
-                Logger.Debug($"[G] {kerbal.name} became inactive due to G-force");
-
                 RemoveHullAnchor();
                 ClearHullTarget();
             }
             else if (!nowInactive && !kerbal.outDueToG)
             {
-                Logger.Debug($"[G] {kerbal.name} woke up");
             }
         }
 
+
+        private void OnVesselUnpacked(Vessel v)
+        {
+            if (v != vessel && (_hullTarget.part == null || v != _hullTarget.part.vessel)) return;
+
+            ClearHullTarget();
+            _surfaceVelCount = 0;
+            _surfaceVelSMA = Vector3.zero;
+        }
+
+        // Add these fields alongside _hullTarget
+        private Vector3 _smoothedHullNormal = Vector3.up;
+        private float _smoothedHitDistance = 0f;
+        private bool _hullSmoothingValid = false;
+
+        // Tune these:
+        private const float NORMAL_SMOOTH_TAU_BASE = 0.06f;  // heavy damping for tiny jitter
+        private const float NORMAL_SMOOTH_TAU_FAST = 0.012f; // fast response for real surface changes
+        private const float NORMAL_SNAP_ANGLE = 60f;    // hard snap above this (e.g. going over an edge)
+        private const float DIST_SMOOTH_TAU = 0.04f;  // smoother than normal — distance is noisier
+        protected virtual void UpdateSmoothedHullSurface()
+        {
+            if (!_hullTarget.IsValid())
+            {
+                _hullSmoothingValid = false;
+                return;
+            }
+
+            float dt = Time.fixedDeltaTime;
+            Vector3 rawNormal = _hullTarget.hitNormal.normalized;
+            float rawDist = _hullTarget.hitDistance;
+
+            if (!_hullSmoothingValid)
+            {
+                _smoothedHullNormal = rawNormal;
+                _smoothedHitDistance = rawDist;
+                _hullSmoothingValid = true;
+                return;
+            }
+
+            // Angle-adaptive EMA on normal — same logic as the camera fix
+            float angleDiff = Vector3.Angle(_smoothedHullNormal, rawNormal);
+            if (angleDiff >= NORMAL_SNAP_ANGLE)
+            {
+                _smoothedHullNormal = rawNormal;
+            }
+            else
+            {
+                float t = Mathf.InverseLerp(1f, 20f, angleDiff);
+                float tau = Mathf.Lerp(NORMAL_SMOOTH_TAU_BASE, NORMAL_SMOOTH_TAU_FAST, t);
+                float alpha = 1f - Mathf.Exp(-dt / tau);
+                _smoothedHullNormal = Vector3.Slerp(_smoothedHullNormal, rawNormal, alpha).normalized;
+            }
+
+            // Simple EMA on distance — kills the vnTarget amplification
+            float alphaDist = 1f - Mathf.Exp(-dt / DIST_SMOOTH_TAU);
+            _smoothedHitDistance = Mathf.Lerp(_smoothedHitDistance, rawDist, alphaDist);
+
+            // Future-cast anticipation: only while actively walking
+            bool isWalking = tgtRpos.sqrMagnitude > VECTOR_ZERO_THRESHOLD
+                          && FSM.CurrentState == st_walk_hull;
+
+            if (isWalking)
+            {
+                float lookahead = Mathf.Lerp(
+                    FUTURE_LOOKAHEAD_MIN, FUTURE_LOOKAHEAD_MAX,
+                    Mathf.InverseLerp(0f, Kerbal.walkSpeed, currentSpd));
+
+                if (TryGetFutureNormal(lookahead,
+                        out Vector3 futureNormal,
+                        out float upComp,
+                        out float distAhead)
+                    && upComp <= FUTURE_CONCAVE_CUTOFF)          // concave only
+                {
+                    // proximity: 0 when far, 1 when the future hit is right at the foot
+                    float proximity = Mathf.Clamp01(1f - distAhead / lookahead);
+
+                    // Gentle progressive nudge — not a snap, not a full override
+                    float alpha = proximity * FUTURE_BLEND_MAX
+                                * (1f - Mathf.Exp(-dt / FUTURE_SMOOTH_TAU));
+
+                    _smoothedHullNormal = Vector3.Slerp(
+                        _smoothedHullNormal, futureNormal, alpha).normalized;
+                }
+            }
+        }
+
+
+        private const float FUTURE_LOOKAHEAD_MIN = 0.30f;
+        private const float FUTURE_LOOKAHEAD_MAX = 0.55f;
+        private const float FUTURE_CAST_UP_BIAS = 0.30f;
+        private const float FUTURE_CAST_LENGTH = 0.60f;
+        private const float FUTURE_FOOT_SPHERE_RADIUS = 0.13f;
+        private const float FUTURE_CONCAVE_CUTOFF = 0.04f;
+        private const float FUTURE_BLEND_MAX = 0.50f;
+        private const float GAP_REJECT_DEPTH = 0.40f;
+        private const float FUTURE_SMOOTH_TAU = 0.07f;
+
+        // Helmet cast
+        private const float HELMET_HEIGHT = 1.0f;  // above footPivot
+        private const float HELMET_SPHERE_RADIUS = 0.35f;  // KSP1 helmet is wider than body
+        private const float HELMET_FORWARD_MARGIN = 0.10f;  // cast slightly past lookahead
+        private const float HELMET_FACING_THRESHOLD = 0.25f;  // wall normal must face this much toward kerbal
+
+        private bool TryGetFutureNormal(
+            float lookaheadDist,
+            out Vector3 futureNormal,
+            out float upComponent,
+            out float distAhead)
+        {
+            futureNormal = Vector3.zero;
+            upComponent = float.MaxValue;
+            distAhead = lookaheadDist;
+
+            if (!_hullTarget.IsValid() || Kerbal?.footPivot == null) return false;
+
+            Vector3 moveDir = Vector3.ProjectOnPlane(tgtRpos, _smoothedHullNormal);
+            if (moveDir.sqrMagnitude < VECTOR_ZERO_THRESHOLD) return false;
+            moveDir.Normalize();
+
+            Vector3 footPos = Kerbal.footPivot.position;
+
+            // --- Foot downcast (finds floor transitions ahead) ---
+            bool footHit = false;
+            Vector3 footNormal = Vector3.zero;
+            float footUpComp = float.MaxValue;
+            float footDistAhead = lookaheadDist;
+
+            Vector3 footCastFrom = footPos
+                                 + moveDir * lookaheadDist
+                                 + _smoothedHullNormal * FUTURE_CAST_UP_BIAS;
+
+            if (Physics.SphereCast(footCastFrom, FUTURE_FOOT_SPHERE_RADIUS,
+                    -_smoothedHullNormal, out RaycastHit footRayHit,
+                    FUTURE_CAST_LENGTH, HullTargeting.HullMask, QueryTriggerInteraction.Ignore)
+                && IsValidHullPart(footRayHit.collider))
+            {
+                Vector3 toHit = footRayHit.point - footPos;
+                float upComp = Vector3.Dot(toHit, _smoothedHullNormal);
+
+                if (upComp >= -GAP_REJECT_DEPTH)  // not a gap
+                {
+                    footNormal = footRayHit.normal.normalized;
+                    footUpComp = upComp;
+                    footDistAhead = Vector3.ProjectOnPlane(toHit, _smoothedHullNormal).magnitude;
+                    footHit = true;
+                }
+            }
+
+            // --- Helmet forward cast (finds walls at head height) ---
+            bool helmetHit = false;
+            Vector3 helmetNormal = Vector3.zero;
+            float helmetUpComp = float.MaxValue;
+            float helmetDistAhead = lookaheadDist;
+
+            Vector3 helmetPos = footPos + _smoothedHullNormal * HELMET_HEIGHT;
+
+            if (Physics.SphereCast(helmetPos, HELMET_SPHERE_RADIUS,
+                    moveDir, out RaycastHit helmetRayHit,
+                    lookaheadDist + HELMET_FORWARD_MARGIN,
+                    HullTargeting.HullMask, QueryTriggerInteraction.Ignore)
+                && IsValidHullPart(helmetRayHit.collider))
+            {
+                // Wall must be facing us — backfaces and grazing hits are noise
+                float facingDot = Vector3.Dot(helmetRayHit.normal, -moveDir);
+                if (facingDot >= HELMET_FACING_THRESHOLD)
+                {
+                    Vector3 toHelmetHit = helmetRayHit.point - footPos;
+                    float hUpComp = Vector3.Dot(toHelmetHit, _smoothedHullNormal);
+                    float hDistAhead = Vector3.ProjectOnPlane(toHelmetHit, _smoothedHullNormal).magnitude;
+
+                    // Only treat as a walk-onto candidate if it's at or below current surface plane
+                    // (a wall rising up from the hull face, not something floating above)
+                    if (hUpComp <= FUTURE_CONCAVE_CUTOFF)
+                    {
+                        helmetNormal = helmetRayHit.normal.normalized;
+                        helmetUpComp = hUpComp;
+                        helmetDistAhead = hDistAhead;
+                        helmetHit = true;
+                    }
+                }
+            }
+
+            // --- Pick winner ---
+            // Helmet cast wins if foot cast missed entirely, or helmet is closer (head hits first)
+            // Foot cast wins for floor-to-floor transitions where the helmet misses the new surface
+            if (helmetHit && (!footHit || helmetDistAhead <= footDistAhead))
+            {
+                futureNormal = helmetNormal;
+                upComponent = helmetUpComp;
+                distAhead = helmetDistAhead;
+                return upComponent <= FUTURE_CONCAVE_CUTOFF;
+            }
+
+            if (footHit)
+            {
+                futureNormal = footNormal;
+                upComponent = footUpComp;
+                distAhead = footDistAhead;
+                return upComponent <= FUTURE_CONCAVE_CUTOFF;
+            }
+
+            return false;
+        }
+
+        // Extracted so both cast paths share identical part validation
+        private bool IsValidHullPart(Collider col)
+        {
+            if (col == null) return false;
+            Part p = col.GetComponentInParent<Part>();
+            if (p == null || p == Kerbal.part) return false;
+            if (p.FindModuleImplementing<ModuleG3NoAttach>() != null) return false;
+            if (!G3MagnetBootsDifficultySettings.Current.magbootsAsteroidsEnabled &&
+                p.FindModuleImplementing<ModuleAsteroid>() != null) return false;
+            return true;
+        }
     }
 }

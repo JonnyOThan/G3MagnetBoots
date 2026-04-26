@@ -28,7 +28,7 @@ namespace G3MagnetBoots
     internal static class HullTargeting
     {
         public static readonly int HullMask = (LayerUtil.DefaultEquivalent | 0x8000 | 0x80000) & ~(0x20000); // exclude layer 17 EVA
-        private static readonly Collider[] _overlaps = new Collider[16];
+        internal static readonly Collider[] _overlaps = new Collider[16];
         private static readonly RaycastHit[] _hits = new RaycastHit[32];
         private static SphereCollider _probeSphere;
         private static Transform _probeXform;
