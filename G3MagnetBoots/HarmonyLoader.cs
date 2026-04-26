@@ -113,10 +113,18 @@ namespace G3MagnetBoots
         {
             if (__instance == null) return;
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
+            if (magBoots == null) return;
 
-            if (magBoots != null && magBoots._constructionFromHull && (__instance.fsm?.CurrentState == __instance.st_enteringConstruction || __instance.fsm?.CurrentState == __instance.st_exitingConstruction || __instance.fsm?.CurrentState == __instance.st_weld) || EVAConstructionModeController.MovementRestricted)
+            if (magBoots._constructionFromHull && (__instance.fsm?.CurrentState == __instance.st_enteringConstruction || __instance.fsm?.CurrentState == __instance.st_exitingConstruction || __instance.fsm?.CurrentState == __instance.st_weld) || EVAConstructionModeController.MovementRestricted)
             {
                 KerbalEVAAccess.TgtRpos(__instance) = Vector3.zero;
+            }
+
+            Vector3 playerInput = KerbalEVAAccess.PackTgtRPos(__instance);
+            Vector3 contribution = magBoots.GetVelocityMatchContribution(playerInput);
+            if (contribution != Vector3.zero)
+            {
+                KerbalEVAAccess.PackTgtRPos(__instance) += contribution;
             }
         }
     }

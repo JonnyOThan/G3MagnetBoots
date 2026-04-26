@@ -28,6 +28,52 @@ namespace G3MagnetBoots
             }
         }
 
+        private Vector3 _smoothedHullNormalLocal = Vector3.up;
+        private bool _smoothedHullNormalLocalValid = false;
+        public Vector3 CameraLockedUp
+        {
+            get
+            {
+                if (_smoothedHullNormalLocalValid && _hullTransform != null)
+                    return _hullTransform.TransformDirection(_smoothedHullNormalLocal).normalized;
+
+                if (_hullSmoothingValid && _smoothedHullNormal.sqrMagnitude > VECTOR_ZERO_THRESHOLD)
+                    return _smoothedHullNormal.normalized;
+
+                return HullNormal;
+            }
+        }
+
+        public Vector3 SmoothedHullNormal
+        {
+            get
+            {
+                if (_hullSmoothingValid && _smoothedHullNormal.sqrMagnitude > VECTOR_ZERO_THRESHOLD)
+                    return _smoothedHullNormal.normalized;
+
+                return HullNormal;
+            }
+        }
+
+        public Transform CameraLockedReferenceTransform
+        {
+            get
+            {
+                if (_hullTransform != null)
+                    return _hullTransform;
+
+                if (_hullTarget.rigidbody != null)
+                    return _hullTarget.rigidbody.transform;
+
+                if (_hullTarget.part != null)
+                    return _hullTarget.part.transform;
+
+                return null;
+            }
+        }
+
+
+
         // Physics Constants
         internal const float SPHERECAST_UP_OFFSET_DEFAULT = 0.15f;
         internal const float SPHERECAST_RADIUS_DEFAULT = 0.25f;
@@ -316,6 +362,7 @@ namespace G3MagnetBoots
 
             GameEvents.onKerbalPassedOutFromGeeForce.Add(OnKerbalBlackedOut);
             GameEvents.onKerbalInactiveChange.Add(OnKerbalInactiveChanged);
+            GameEvents.onVesselLoaded.Add(OnVesselUnpacked);
             GameEvents.onVesselGoOffRails.Add(OnVesselUnpacked);
         }
 
@@ -323,12 +370,14 @@ namespace G3MagnetBoots
         {
             GameEvents.onKerbalPassedOutFromGeeForce.Remove(OnKerbalBlackedOut);
             GameEvents.onKerbalInactiveChange.Remove(OnKerbalInactiveChanged);
+            GameEvents.onVesselLoaded.Remove(OnVesselUnpacked);
             GameEvents.onVesselGoOffRails.Remove(OnVesselUnpacked);
         }
 
         public override void OnUpdate()
         {
             base.OnUpdate();
+            UpdatePlantFlagOnHullButton();
             UpdateUI();
 
             if (!IsTechUnlocked())
@@ -753,6 +802,8 @@ namespace G3MagnetBoots
             _hullTransform = null;
             _surfaceVelCount = 0;
             _hullSmoothingValid = false;
+            _smoothedHullNormalLocalValid = false;
+            _smoothedHullNormalLocal = Vector3.up;
             RemoveHullAnchor();
         }
 
@@ -769,7 +820,7 @@ namespace G3MagnetBoots
 
         protected virtual void idle_hull_OnEnter(KFSMState s)
         {
-            Kerbal.Events["PlantFlag"].active = DifficultySettings.magbootsPlantFlagEnabled;
+            Kerbal.Events["PlantFlag"].active = false; //DifficultySettings.magbootsPlantFlagEnabled;
             tgtSpeed = 0f;
             currentSpd = 0f;
             KerbalEVAAccess.KerbalAnchorTimeCounter(Kerbal) = 0f;
@@ -1103,6 +1154,7 @@ namespace G3MagnetBoots
             ClearHullTarget();
             RemoveHullAnchor();
             ApplyLetGoImpulse();
+            Kerbal.Events["PlantFlag"].active = true;
             Kerbal.StartCoroutine(On_letGo_Coroutine(LET_GO_COOLDOWN_TIME));
             Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_LETGO));
             TrySetVelocityMatchEngageDelay(JETPACK_DEPLOY_DELAY_LETGO);
@@ -1491,8 +1543,7 @@ namespace G3MagnetBoots
             _smoothedHitDistance = Mathf.Lerp(_smoothedHitDistance, rawDist, alphaDist);
 
             // Future-cast anticipation: only while actively walking
-            bool isWalking = tgtRpos.sqrMagnitude > VECTOR_ZERO_THRESHOLD
-                          && FSM.CurrentState == st_walk_hull;
+            bool isWalking = tgtRpos.sqrMagnitude > VECTOR_ZERO_THRESHOLD && FSM.CurrentState == st_walk_hull;
 
             if (isWalking)
             {
@@ -1516,6 +1567,17 @@ namespace G3MagnetBoots
                     _smoothedHullNormal = Vector3.Slerp(
                         _smoothedHullNormal, futureNormal, alpha).normalized;
                 }
+            }
+            if (_hullTransform != null && _hullSmoothingValid)
+            {
+                _smoothedHullNormalLocal =
+                    _hullTransform.InverseTransformDirection(_smoothedHullNormal).normalized;
+
+                _smoothedHullNormalLocalValid = true;
+            }
+            else
+            {
+                _smoothedHullNormalLocalValid = false;
             }
         }
 
@@ -1648,5 +1710,84 @@ namespace G3MagnetBoots
                 p.FindModuleImplementing<ModuleAsteroid>() != null) return false;
             return true;
         }
+
+        //VELOCITYMATCH
+        private const float VM_DEAD_ZONE = 0.05f; // m/s — don't chatter at rest
+        internal Vector3 GetVelocityMatchContribution(Vector3 playerPackTgtRPos)
+        {
+            if (Kerbal == null) return Vector3.zero;
+            if (vessel == null || vessel.mainBody == null) return Vector3.zero;
+            if (vessel != FlightGlobals.ActiveVessel) return Vector3.zero;
+
+            if (!Kerbal.HasJetpack) return Vector3.zero;
+            if (!Kerbal.JetpackDeployed) return Vector3.zero;
+            if (Kerbal.Fuel <= 0.0) return Vector3.zero;
+
+            // Dumb/manual priority: any player jetpack input cancels matching this frame.
+            if (playerPackTgtRPos.sqrMagnitude > 0.001f)
+                return Vector3.zero;
+
+            if (!GameSettings.BRAKES.GetKey())
+                return Vector3.zero;
+
+            Vessel target = GetTargetVessel();
+            if (target == null) return Vector3.zero;
+
+            var rb = part?.rb;
+            if (rb == null) return Vector3.zero;
+
+            Vector3 relVel = (Vector3)(vessel.GetObtVelocity() - target.GetObtVelocity());
+            float relSpeed = relVel.magnitude;
+
+            if (relSpeed < VM_DEAD_ZONE)
+                return Vector3.zero;
+
+            float thrustPct = Kerbal.thrustPercentage * 0.01f;
+            if (thrustPct <= 0f) return Vector3.zero;
+            if (Kerbal.linPower <= 0f) return Vector3.zero;
+
+            Vector3 thrustDir = -relVel.normalized;
+
+            // Same basic scale logic as your current implementation.
+            float exactScale =
+                (relSpeed * Mathf.Max(rb.mass, 0.001f)) /
+                (Kerbal.linPower * Time.fixedDeltaTime);
+
+            float thrustScale = Mathf.Min(thrustPct, exactScale) * 0.5f;
+
+            // KerbalEVA.UpdatePackLinear multiplies packTgtRPos by thrustPct,
+            // so pre-divide to get the desired actual thrust scale.
+            return thrustDir * (thrustScale / thrustPct);
+        }
+
+        private Vessel GetTargetVessel()
+        {
+            var fetch = FlightGlobals.fetch;
+            if (fetch == null) return null;
+
+            var target = fetch.VesselTarget;
+            if (target == null) return null;
+
+            Vessel targetVessel = target as Vessel;
+
+            if (targetVessel == null)
+            {
+                try { targetVessel = target.GetVessel(); }
+                catch { return null; }
+            }
+
+            if (targetVessel == null) return null;
+            if (targetVessel == vessel) return null;
+            if (targetVessel.packed) return null;
+            if (targetVessel.mainBody == null) return null;
+
+            return targetVessel;
+        }
+
+
+
+
+
     }
+
 }

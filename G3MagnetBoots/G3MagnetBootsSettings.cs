@@ -54,7 +54,7 @@ namespace G3MagnetBoots
         public bool magbootsAsteroidsEnabled = true;
 
         [GameParameters.CustomParameterUI("Require micro-gravity", toolTip = "Prevent magnet boots from working below 3500m altitude to avoid interference with parachute deployment and atmospheric flight")]
-        public bool magbootsRequireHighAltitudeEnabled = true;
+        public bool magbootsRequireHighAltitudeEnabled = false;
 
         [GameParameters.CustomParameterUI("Allow packing parachute on hull", toolTip = "Allow kerbals to pack their parachute while attached to hull")]
         public bool magbootsRepackChuteEnabled = true;
