@@ -423,39 +423,10 @@ namespace G3MagnetBoots
     {
         static void Prefix(FlagSite __instance, float breakForce)
         {
-            Logger.Info($"[HullFlag] *** OnJointBreak *** flag={__instance?.name}  breakForce={breakForce:F2}");
-            var joint = __instance?.GetComponent<ConfigurableJoint>();
-            if (joint != null)
-                Logger.Info($"[HullFlag]   joint.breakForce={joint.breakForce}  connectedBody={joint.connectedBody?.name ?? "null"}");
         }
     }
 
-    // Log when FlagSite.Start fires — this is when SetupFSM and SetJoint actually run
-    [HarmonyPatch(typeof(FlagSite), "Start")]
-    internal static class Patch_FlagSite_Start
-    {
-        static void Prefix(FlagSite __instance)
-        {
-            Logger.Info($"[HullFlag] FlagSite.Start firing  name={__instance?.name}  frame={Time.frameCount}");
-            Logger.Info($"[HullFlag]   part.packed          = {__instance?.part?.packed}");
-            Logger.Info($"[HullFlag]   PendingHullRb        = {(Patch_KerbalEVA_flagPlant_OnEnter.PendingHullRb == null ? "null" : Patch_KerbalEVA_flagPlant_OnEnter.PendingHullRb.name)}");
-            var flagRb = __instance?.GetComponent<Rigidbody>();
-            if (flagRb != null)
-                Logger.Info($"[HullFlag]   flag rb velocity at Start = {flagRb.velocity}");
-        }
-    }
 
-    // Log any part death that happens while a hull flag plant is in progress
-    [HarmonyPatch(typeof(Part), "Die")]
-    internal static class Patch_Part_Die
-    {
-        static void Prefix(Part __instance)
-        {
-            if (!Patch_KerbalEVA_flagPlant_OnEnter.PlantInProgress) return;
-            Logger.Info($"[HullFlag] *** Part.Die *** part={__instance?.name}  vessel={__instance?.vessel?.vesselName}  crashTol={__instance?.crashTolerance}");
-            Logger.Info(Environment.StackTrace);
-        }
-    }
 
     [HarmonyPatch(typeof(KerbalEVA), "flagPlant_OnLeave")]
     internal static class Patch_KerbalEVA_flagPlant_OnLeave
@@ -464,31 +435,21 @@ namespace G3MagnetBoots
         {
             if (__instance == null) return true;
             var magBoots = __instance.part?.FindModuleImplementing<ModuleG3MagnetBoots>();
-            Logger.Info($"[HullFlag] flagPlant_OnLeave PREFIX entry  FlagStartedFromHull={magBoots?.FlagStartedFromHull}  PlantInProgress={Patch_KerbalEVA_flagPlant_OnEnter.PlantInProgress}");
             if (magBoots == null || !magBoots.FlagStartedFromHull) return true;
 
             FlagSite flag = KerbalEVAAccess.Flag(__instance);
             bool completed = __instance.fsm.LastEvent == __instance.On_flagPlantComplete;
-
-            Logger.Info($"[HullFlag] flagPlant_OnLeave PREFIX");
-            Logger.Info($"[HullFlag]   completed        = {completed}");
-            Logger.Info($"[HullFlag]   flag ref         = {(flag == null ? "NULL/destroyed" : flag.name)}");
-            Logger.Info($"[HullFlag]   lastEvent        = {__instance.fsm.LastEvent?.name ?? "null"}");
 
             KerbalEVAAccess.LastTgtSpeed(__instance) = 0f;
             InputLockManager.RemoveControlLock("FlagDeployLock_" + __instance.vessel.id);
 
             if (!completed)
             {
-                Logger.Info("[HullFlag]   → OnPlacementFail path");
                 if (flag != null && flag)
                     flag.OnPlacementFail();
-                else
-                    Logger.Info("[HullFlag]   flag was null/destroyed — skipping OnPlacementFail");
             }
             else if (flag != null && flag)
             {
-                Logger.Info("[HullFlag]   → OnPlacementComplete path");
                 flag.OnPlacementComplete();
 
                 // Couple the flag part into the hull vessel so it moves with it through timewarp and persists across save/load. Coupling:   1. Merges the flag's single-part vessel into the hull vessel's part tree   2. Creates a proper PartJoint (attachJoint) that KSP serialises   3. Destroys the flag's separate Vessel object  We then destroy our temporary ConfigurableJoint — the PartJoint replaces it.
@@ -496,22 +457,15 @@ namespace G3MagnetBoots
                 Part hullPart = hullRb != null ? hullRb.GetComponent<Part>() : null;
                 if (hullPart != null)
                 {
-                    Logger.Info($"[HullFlag]   coupling flag to hull part={hullPart.name}");
                     flag.part.attachMode = AttachModes.SRF_ATTACH;
                     flag.part.Couple(hullPart);
                     // Destroy the temporary ConfigurableJoint — the attachJoint takes over.
                     var tempJoint = flag.part.GetComponent<ConfigurableJoint>();
                     if (tempJoint != null)
                         UnityEngine.Object.Destroy(tempJoint);
-                    Logger.Info("[HullFlag]   coupling complete");
-                }
-                else
-                {
-                    Logger.Info("[HullFlag]   hullPart not found — flag will not be coupled (will drift)");
                 }
 
                 string bodyName = __instance.vessel.orbit.referenceBody.name;
-                Logger.Info($"[HullFlag]   logging PlantFlag for body={bodyName}");
                 __instance.part.protoModuleCrew[0].flightLog.AddEntryUnique(FlightLog.EntryType.PlantFlag, bodyName);
                 __instance.part.protoModuleCrew[0].UpdateExperience();
 

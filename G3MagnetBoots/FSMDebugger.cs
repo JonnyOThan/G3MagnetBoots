@@ -34,7 +34,7 @@ namespace G3MagnetBoots
         private string _lastStateName = "";
 
         // event name -> hooked delegate (so we can un-hook cleanly on destroy/rehook)
-        private readonly Dictionary<string, Action> _hookedDelegates = new();
+        private readonly Dictionary<string, Delegate> _hookedDelegates = new();
 
         private void Start()
         {
@@ -53,7 +53,7 @@ namespace G3MagnetBoots
         {
             UnhookEvents();
             HookAllEvents();
-            _lastStateName = _eva?.fsm?.CurrentState?.name ?? "";
+            _lastStateName = _eva?.fsm?.CurrentState?.name ?? "<null>";
         }
 
         // ---- state polling ----
@@ -95,7 +95,7 @@ namespace G3MagnetBoots
                 string evtName = evt.name;
                 if (_hookedDelegates.ContainsKey(evtName)) continue; // already hooked
 
-                Action handler = MakeHandler(evtName);
+                Delegate handler = MakeHandler(evtName);
                 _hookedDelegates[evtName] = handler;
 
                 // Append our handler to the existing OnEvent multicast delegate
@@ -120,17 +120,19 @@ namespace G3MagnetBoots
             _hookedDelegates.Clear();
         }
 
-        private Action MakeHandler(string evtName)
+        private Delegate MakeHandler(string evtName)
         {
-            // Capture by value so each closure is independent
             string name = evtName;
             string kerbalName = _eva?.name ?? "?";
-            return () =>
+
+            Action action = () =>
             {
                 if (!Logger.IsDebugMode) return;
                 string state = _eva?.fsm?.CurrentState?.name ?? "<null>";
                 Logger.Debug($"[FSM:{kerbalName}] Event fired: {name}  (in state: {state})");
             };
+
+            return Delegate.CreateDelegate(_onEventField.FieldType, action.Target, action.Method);
         }
 
         // KerbalFSM stores states in a private/protected list — reflect to find it.

@@ -72,6 +72,23 @@ namespace G3MagnetBoots
             }
         }
 
+        public Vector3 CameraLockedAnchorWorld
+        {
+            get
+            {
+                // Render-current part COM, using transform interpolation if available.
+                if (Part != null && Part.rb != null && Part.rb.transform != null)
+                    return Part.rb.transform.TransformPoint(Part.rb.centerOfMass);
+
+                if (Kerbal != null && Kerbal.transform != null)
+                    return Kerbal.transform.position;
+
+                if (Part != null)
+                    return Part.transform.position;
+
+                return transform.position;
+            }
+        }
 
 
         // Physics Constants
@@ -128,8 +145,13 @@ namespace G3MagnetBoots
 
         // Hull Anchor Joint
         private float _hullAnchorTimer;
-        private const float HULL_ANCHOR_DELAY = 0.25f;
+        private const float HULL_ANCHOR_DELAY = 0.5f;
+        private const float HULL_ANCHOR_MAX_NORMAL_DELTA = 1.0f; // degrees
+        private const float HULL_ANCHOR_MAX_REL_SPEED = 0.5f;
+        private const float HULL_ANCHOR_MAX_PAD_ERROR = 0.005f;
         private const float HULL_ANCHOR_MAX_DISTANCE_ERROR = 0.05f;
+        private const float HULL_ANCHOR_MAX_REL_NORMAL_SPEED = 0.08f;
+        private const float HULL_ANCHOR_MAX_REL_TANGENT_SPEED = 0.10f;
 
         private static G3MagnetBootsSettings Settings => G3MagnetBootsSettings.Current;
         private static G3MagnetBootsDifficultySettings DifficultySettings => G3MagnetBootsDifficultySettings.Current;
@@ -351,13 +373,17 @@ namespace G3MagnetBoots
             }
         }
 
+
         // MonoBehaviour... behavior?
         public override void OnStart(StartState state)
         {
             base.OnStart(state);
             if (!HighLogic.LoadedSceneIsFlight) return;
 
+            _lastBrakes = IsAGOn(KSPActionGroup.Brakes);
             _inLetGoCooldown = false;
+
+            HookAGBrakesButton();
             HookAGGearButton();
 
             GameEvents.onKerbalPassedOutFromGeeForce.Add(OnKerbalBlackedOut);
@@ -379,6 +405,7 @@ namespace G3MagnetBoots
             base.OnUpdate();
             UpdatePlantFlagOnHullButton();
             UpdateUI();
+            UpdateHullAnchorAGInterface();
 
             if (!IsTechUnlocked())
             {
@@ -432,7 +459,6 @@ namespace G3MagnetBoots
             st_idle_hull.OnFixedUpdate += UpdateHeading;
             st_idle_hull.OnFixedUpdate += TryAddHullAnchor;
             st_idle_hull.OnFixedUpdate += UpdatePackLinear;
-            st_idle_hull.OnFixedUpdate += updateRagdollVelocities;
             st_idle_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
             st_idle_hull.OnFixedUpdate += ValidateHullAnchor;
             //st_idle_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
@@ -489,7 +515,6 @@ namespace G3MagnetBoots
             st_walk_hull.OnFixedUpdate += UpdateMovementOnVessel;
             st_walk_hull.OnFixedUpdate += UpdateHeading;
             st_walk_hull.OnFixedUpdate += UpdatePackLinear;
-            st_walk_hull.OnFixedUpdate += updateRagdollVelocities;
             st_walk_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
             //st_walk_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
             st_walk_hull.OnEnter = _ =>
@@ -537,7 +562,6 @@ namespace G3MagnetBoots
             st_jump_hull.OnEnter = jump_hull_OnEnter;
             st_jump_hull.OnFixedUpdate = UpdateMovementOnVessel;
             st_jump_hull.OnFixedUpdate += UpdateHeading;
-            st_jump_hull.OnFixedUpdate += updateRagdollVelocities;
             //st_jump_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
             FSM.AddState(st_jump_hull);
 
@@ -647,20 +671,63 @@ namespace G3MagnetBoots
         }
 
         private ConfigurableJoint _hullAnchorJoint;
+        private bool ShouldUseHullAnchor()
+        {
+            if (!IsBrakesOn) return false;
+            if (_hullAnchorJoint != null) return false;
+            if (FSM.CurrentState != st_idle_hull) return false;
+            if (!_hullTarget.IsValid()) return false;
+            if (Part.rb == null || _hullTarget.rigidbody == null) return false;
+
+            if (tgtRpos != Vector3.zero) return false;
+            if (PartHasMovingColliderRisk(_hullTarget.part)) return false;
+
+            if (!TryGetExactPadRelativeVelocity(out Vector3 relVel, out float relN, out float relT))
+                return false;
+
+            if (relN > HULL_ANCHOR_MAX_REL_NORMAL_SPEED)
+                return false;
+
+            if (relT > HULL_ANCHOR_MAX_REL_TANGENT_SPEED)
+                return false;
+
+            float normalDelta = Vector3.Angle(_smoothedHullNormal, _hullTarget.hitNormal.normalized);
+            if (normalDelta > HULL_ANCHOR_MAX_NORMAL_DELTA)
+                return false;
+
+            return true;
+        }
+
+        private bool TryGetExactPadRelativeVelocity(out Vector3 relVel, out float relN, out float relT)
+        {
+            relVel = Vector3.zero;
+            relN = 0f;
+            relT = 0f;
+
+            if (!_hullTarget.IsValid() || Part?.rb == null || _hullTarget.rigidbody == null)
+                return false;
+
+            Vector3 n = _hullSmoothingValid && _smoothedHullNormal.sqrMagnitude > VECTOR_ZERO_THRESHOLD
+                ? _smoothedHullNormal.normalized
+                : _hullTarget.hitNormal.normalized;
+
+            Vector3 contactPoint = Part.rb.position - n * FootHullPad;
+
+            Vector3 kerbalVel = Part.rb.velocity;
+            Vector3 surfaceVel = _hullTarget.rigidbody.GetPointVelocity(contactPoint);
+
+            relVel = kerbalVel - surfaceVel;
+            relN = Mathf.Abs(Vector3.Dot(relVel, n));
+            relT = Vector3.ProjectOnPlane(relVel, n).magnitude;
+
+            return true;
+        }
 
         private void TryAddHullAnchor()
         {
-            if (_hullAnchorJoint != null) return;
-            if (FSM.CurrentState != st_idle_hull) return;
-            if (!_hullTarget.IsValid()) return;
 
-            if (PartHasMovingColliderRisk(_hullTarget.part))
-            {
-                _hullAnchorTimer = 0f;
-                return;
-            }
 
-            if (tgtRpos != Vector3.zero)
+            if (!ShouldUseHullAnchor())
             {
                 _hullAnchorTimer = 0f;
                 return;
@@ -669,7 +736,6 @@ namespace G3MagnetBoots
             _hullAnchorTimer += Time.fixedDeltaTime;
             if (_hullAnchorTimer < HULL_ANCHOR_DELAY) return;
 
-            SnapToHullPad();
             AddHullAnchor();
         }
 
@@ -713,17 +779,28 @@ namespace G3MagnetBoots
         {
             if (!_hullTarget.IsValid() || Part.rb == null) return;
 
-            Vector3 normal = _hullSmoothingValid ? _smoothedHullNormal : _hullTarget.hitNormal.normalized;
+            Vector3 normal = _hullSmoothingValid ? _smoothedHullNormal.normalized : _hullTarget.hitNormal.normalized;
             float dist = _hullSmoothingValid ? _smoothedHitDistance : _hullTarget.hitDistance;
             float error = FootHullPad - dist;
 
-            if (error > 0f)
-            {
-                Vector3 correction = normal * error;
-                Part.rb.position += correction;
-                // Cancel the implied phantom velocity the position jump created
-                Part.rb.velocity -= correction / Time.fixedDeltaTime;
-            }
+            if (error <= 0f)
+                return;
+
+            Part.rb.position += normal * error;
+
+            Vector3 contactPoint = Part.rb.position - normal * FootHullPad;
+            Vector3 surfaceVel = _hullTarget.rigidbody != null
+                ? _hullTarget.rigidbody.GetPointVelocity(contactPoint)
+                : Vector3.zero;
+
+            Vector3 relVel = Part.rb.velocity - surfaceVel;
+            float vn = Vector3.Dot(relVel, normal);
+
+            // Kill only inward motion.
+            if (vn < 0f)
+                Part.rb.velocity -= normal * vn;
+
+            Physics.SyncTransforms();
         }
 
         private bool PartHasMovingColliderRisk(Part p)
@@ -763,13 +840,18 @@ namespace G3MagnetBoots
 
             if (!_hullTarget.IsValid())
             {
-                ClearHullTarget();
+                RemoveHullAnchor();
+                return;
+            }
+
+            if (tgtRpos != Vector3.zero)
+            {
+                RemoveHullAnchor();
                 return;
             }
 
             if (PartHasMovingColliderRisk(_hullTarget.part))
             {
-                Logger.Debug("[Anchor] Releasing: target part has moving collider risk");
                 RemoveHullAnchor();
                 return;
             }
@@ -1269,14 +1351,6 @@ namespace G3MagnetBoots
 
         protected virtual void updateRagdollVelocities()
         {
-            if (!base.vessel.packed)
-            {
-                int num = Kerbal.ragdollNodes.Length;
-                while (num-- > 0)
-                {
-                    //Kerbal.ragdollNodes[num].updateVelocity(base.transform.position, base.part.rb.velocity, 1f / Time.fixedDeltaTime);
-                }
-            }
         }
 
         // Stock-alike custom implementation replacing correctGroundedRotation() which uses the scene-fixed coordinate frame
@@ -1318,7 +1392,7 @@ namespace G3MagnetBoots
 
             // Actually MovePosition is queued, so track manually:
             Vector3 expectedPosDelta = (pivot + (delta * (posBefore - pivot))) - posBefore;
-            rb.velocity -= expectedPosDelta / Time.fixedDeltaTime;
+            //rb.velocity -= expectedPosDelta / Time.fixedDeltaTime;
 
             _localHullForward = _hullTransform.InverseTransformDirection(newRot * Vector3.forward); // update local hull forward after turning
         }
@@ -1331,10 +1405,14 @@ namespace G3MagnetBoots
 
             if (_hullAnchorJoint != null)
             {
-                // Just inherit hull motion
-                //var rb = Part.rb;
-                //if (rb != null && _hullTarget.rigidbody != null)
-                //    rb.velocity = _hullTarget.rigidbody.velocity;
+                if (_hullTarget.IsValid())
+                {
+                    Vector3 anchorContactPoint = Part.rb.position - fUp.normalized * FootHullPad;
+                    _surfaceVelSMA = _hullTarget.rigidbody != null
+                        ? _hullTarget.rigidbody.GetPointVelocity(anchorContactPoint)
+                        : Vector3.zero;
+                    _surfaceVelCount = 1;
+                }
 
                 return;
             }
@@ -1351,8 +1429,11 @@ namespace G3MagnetBoots
             var rb = Part.rb;
             if (rb == null) return;
 
-            Vector3 surfaceVelRaw = HullTargeting.GetSurfacePointVelocity(_hullTarget);
-            // simple EMA works well and is cheap
+            Vector3 contactPoint = rb.position - fUp.normalized * FootHullPad;
+
+            Vector3 surfaceVelRaw = _hullTarget.rigidbody != null
+                ? _hullTarget.rigidbody.GetPointVelocity(contactPoint)
+                : Vector3.zero;            // simple EMA works well and is cheap
             float dt = Time.fixedDeltaTime;
             float tau = SURFACE_VELOCITY_SMOOTHING_TAU;
             float alpha = 1f - Mathf.Exp(-dt / tau);
@@ -1366,8 +1447,18 @@ namespace G3MagnetBoots
             Vector3 vRelN = fUp * vn;
             Vector3 vRelT = vRel - vRelN;
 
-            float vnTarget = (_smoothedHitDistance > FootHullPad) ? (FootHullPad - _smoothedHitDistance) / dt : 0f;
-            float dv = Mathf.Clamp(vnTarget - vn, -Settings.magbootsClampForce * dt, Settings.magbootsClampForce * dt);
+            float padError = FootHullPad - _smoothedHitDistance;
+
+            // Optional deadzone to avoid micro-chatter.
+            if (Mathf.Abs(padError) < 0.003f)
+                padError = 0f;
+
+            // Positive = push outward along fUp.
+            // Negative = pull inward toward hull.
+            float vnTarget = padError / dt;
+
+            float maxDv = Settings.magbootsClampForce * dt;
+            float dv = Mathf.Clamp(vnTarget - vn, -maxDv, maxDv);
 
             float vnNew = vn + dv;
             Vector3 vRelNNew = fUp * vnNew;

@@ -1,6 +1,7 @@
 ﻿using KSP.UI;
 using UnityEngine;
 using UnityEngine.Events;
+using System.Collections;
 using static KerbalEVA;
 
 namespace G3MagnetBoots
@@ -45,6 +46,7 @@ namespace G3MagnetBoots
             }
 
             UpdatePlantFlagOnHullButton();
+            UpdateHullAnchorAGInterface();
         }
 
         void PostMagMsg(bool on)
@@ -127,6 +129,132 @@ namespace G3MagnetBoots
                 }
             }
             catch { }
+            UnhookAGBrakesButton();
         }
+
+        private bool _lastBrakes;
+        private UIButtonToggle _agBrakesButton;
+        private bool _syncingAGBrakesButtons;
+        private UnityAction _agBrakesOnAction;
+        private UnityAction _agBrakesOffAction;
+
+        public bool IsBrakesOn => IsAGOn(KSPActionGroup.Brakes);
+
+        private void UpdateHullAnchorAGInterface()
+        {
+            if (!HighLogic.LoadedSceneIsFlight || Kerbal == null || vessel == null)
+                return;
+
+            if (GameSettings.BRAKES.GetKeyDown() && VesselUnderControl)
+            {
+                ToggleAG(KSPActionGroup.Brakes);
+            }
+
+            bool brakesNow = IsBrakesOn;
+
+            if (brakesNow != _lastBrakes)
+            {
+                if (!brakesNow)
+                {
+                    RemoveHullAnchor();
+                    _hullAnchorTimer = 0f;
+                }
+                else
+                {
+                    // Do not immediately AddHullAnchor() here.
+                    // Just allow TryAddHullAnchor() to engage when stable.
+                    _hullAnchorTimer = 0f;
+                }
+
+                _lastBrakes = brakesNow;
+            }
+
+            SyncAGBrakesButton();
+        }
+
+
+        private void HookAGBrakesButton()
+        {
+            _lastBrakes = IsAGOn(KSPActionGroup.Brakes);
+
+            _agBrakesButton = GameObject.Find("ButtonActionGroupBrakes")
+                ?.GetComponent<UIButtonToggle>();
+
+            if (_agBrakesButton == null)
+            {
+                StartCoroutine(RetryHookAGBrakesButton());
+                return;
+            }
+
+            _agBrakesOnAction = SyncAGBrakesButton;
+            _agBrakesOffAction = SyncAGBrakesButton;
+
+            _agBrakesButton.onToggleOn.AddListener(_agBrakesOnAction);
+            _agBrakesButton.onToggleOff.AddListener(_agBrakesOffAction);
+
+            SyncAGBrakesButton();
+        }
+
+        private IEnumerator RetryHookAGBrakesButton()
+        {
+            while (_agBrakesButton == null && this != null && base.enabled)
+            {
+                yield return new WaitForSeconds(0.5f);
+
+                _agBrakesButton = GameObject.Find("ButtonActionGroupBrakes")
+                    ?.GetComponent<UIButtonToggle>();
+            }
+
+            if (_agBrakesButton == null)
+                yield break;
+
+            _agBrakesOnAction = SyncAGBrakesButton;
+            _agBrakesOffAction = SyncAGBrakesButton;
+
+            _agBrakesButton.onToggleOn.AddListener(_agBrakesOnAction);
+            _agBrakesButton.onToggleOff.AddListener(_agBrakesOffAction);
+
+            SyncAGBrakesButton();
+        }
+
+        private void UnhookAGBrakesButton()
+        {
+            try
+            {
+                if (_agBrakesButton != null)
+                {
+                    if (_agBrakesOnAction != null)
+                        _agBrakesButton.onToggleOn.RemoveListener(_agBrakesOnAction);
+
+                    if (_agBrakesOffAction != null)
+                        _agBrakesButton.onToggleOff.RemoveListener(_agBrakesOffAction);
+                }
+            }
+            catch
+            {
+            }
+
+            _agBrakesButton = null;
+            _agBrakesOnAction = null;
+            _agBrakesOffAction = null;
+            _syncingAGBrakesButtons = false;
+        }
+
+        private void SyncAGBrakesButton()
+        {
+            if (_agBrakesButton == null || _syncingAGBrakesButtons)
+                return;
+
+            _syncingAGBrakesButtons = true;
+            try
+            {
+                _agBrakesButton.SetState(IsAGOn(KSPActionGroup.Brakes));
+            }
+            finally
+            {
+                _syncingAGBrakesButtons = false;
+            }
+        }
+
     }
 }
