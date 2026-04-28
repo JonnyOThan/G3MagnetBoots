@@ -11,17 +11,12 @@ namespace G3MagnetBoots
         public Vector3 hitNormal;
         public float hitDistance;
 
-        // debug
-        public Vector3 debugSphereOrigin;
-        public float debugSphereRadius;
-        public bool debugOriginInsideAny;
-
         public bool IsValid()
         {
             return this.part != null
                 && this.collider != null
                 && this.part.FindModuleImplementing<ModuleG3NoAttach>() == null // cannot attach to parts with G3NoAttachModule, added to blacklist parts from config
-                && (G3MagnetBootsDifficultySettings.Current.magbootsAsteroidsEnabled || this.part.FindModuleImplementing<ModuleAsteroid>() == null);
+                && (G3MagnetBootsSettings.Current.magbootsAsteroidsEnabled || this.part.FindModuleImplementing<ModuleAsteroid>() == null);
         }
     }
 
@@ -119,7 +114,7 @@ namespace G3MagnetBoots
 
                 // Skip disallowed parts (same rules as HullTarget.IsValid)
                 if (hitPart.FindModuleImplementing<ModuleG3NoAttach>() != null) continue;
-                if (!G3MagnetBootsDifficultySettings.Current.magbootsAsteroidsEnabled &&
+                if (!G3MagnetBootsSettings.Current.magbootsAsteroidsEnabled &&
                     hitPart.FindModuleImplementing<ModuleAsteroid>() != null) continue;
 
 
@@ -160,10 +155,6 @@ namespace G3MagnetBoots
                     best.hitPoint = point;
                     best.hitNormal = normal;
                     best.hitDistance = dist;
-
-                    best.debugSphereOrigin = origin;
-                    best.debugSphereRadius = sphereRadius;
-                    best.debugOriginInsideAny = originInsideAny;
                 }
             }
 

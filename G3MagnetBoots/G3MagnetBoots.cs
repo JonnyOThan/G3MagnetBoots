@@ -32,8 +32,5 @@ namespace G3MagnetBoots
         private void Start() { Logger.Trace("G3MagnetBoots Start"); }
 
         private void Update() { }
-   
-
     }
-
 }

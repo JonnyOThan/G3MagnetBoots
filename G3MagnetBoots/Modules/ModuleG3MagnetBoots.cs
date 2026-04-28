@@ -6,14 +6,6 @@ using System.Linq;
 using UnityEngine;
 using static KerbalEVA;
 
-/*  For the future:
- *  Kerbals surface - aligned forward direction(the way they face) doesn't turn alongside the plane they are attached to, resulting in clear misaligned facing direction when the vessel beneath rotates.
- *  KSP2-style time-smoothed spherecasts and orientation changes with SMA Simple Moving Average filter to reduce jitter, consider a 2nd spherecast from a predicted future position to surface normal early.
- *  Consider adding sound effects for magnet engage/disengage, walking on hull, jumping off hull.
- *  Consider adding an LED indicator on the Kerbal suit boot model to show magnet status and provide slight illumination.
- *  Hook into stock EVA Ground science state changes (to allow playing golf on a ship and possibly collecting samples of a ship)
- */
-
 namespace G3MagnetBoots
 {
     public partial class ModuleG3MagnetBoots
@@ -111,16 +103,16 @@ namespace G3MagnetBoots
         internal const float LOW_GEE_ANIMATION_SPEED = 2.7f;
 
         // Impulse & Force Constants
-        internal const float LET_GO_IMPULSE_STRENGTH = 0.5f;
+        internal const float LET_GO_IMPULSE_STRENGTH = 1.0f;
         internal const float ROTATION_RATE_MULTIPLIER = 360f;
 
         // Cooldown & Delay Constants
         internal const float LET_GO_COOLDOWN_TIME = 1.0f;
         internal const float JETPACK_DEPLOY_DELAY_JUMP = 1.0f;
         internal const float JETPACK_DEPLOY_DELAY_LETGO = 0.5f;
-        internal const float LADDER_LETGO_SPHERECAST_BOOST_TIME = 2.0f;
-        internal const float LADDER_LETGO_SPHERECAST_RADIUS_BOOST = 6.0f;
-        internal const float LADDER_LETGO_SPHERECAST_LENGTH_BOOST = 2.0f;
+        internal const float LADDER_LETGO_SPHERECAST_BOOST_TIME = 1.0f;
+        internal const float LADDER_LETGO_SPHERECAST_RADIUS_BOOST = 10.0f;
+        internal const float LADDER_LETGO_SPHERECAST_LENGTH_BOOST = 4.0f;
 
         // Speed & Movement Constants
         internal const float MIN_MOVEMENT_THRESHOLD = 0.01f;
@@ -132,8 +124,6 @@ namespace G3MagnetBoots
 
         // Vector Magnitude Thresholds
         internal const float VECTOR_ZERO_THRESHOLD = 1e-6f;
-        internal const float VECTOR_ZERO_THRESHOLD_TIGHT = 1e-8f;
-        internal const float VECTOR_ZERO_THRESHOLD_LOOSE = 1e-5f;
 
         // Quaternion Dot Product Thresholds
         internal const float QUAT_DOT_NEARLY_SAME = 0.9999f;
@@ -146,15 +136,10 @@ namespace G3MagnetBoots
         // Hull Anchor Joint
         private float _hullAnchorTimer;
         private const float HULL_ANCHOR_DELAY = 0.5f;
-        private const float HULL_ANCHOR_MAX_NORMAL_DELTA = 1.0f; // degrees
-        private const float HULL_ANCHOR_MAX_REL_SPEED = 0.5f;
-        private const float HULL_ANCHOR_MAX_PAD_ERROR = 0.005f;
-        private const float HULL_ANCHOR_MAX_DISTANCE_ERROR = 0.05f;
-        private const float HULL_ANCHOR_MAX_REL_NORMAL_SPEED = 0.08f;
-        private const float HULL_ANCHOR_MAX_REL_TANGENT_SPEED = 0.10f;
+        private const float HULL_ANCHOR_MAX_NORMAL_DELTA = 3.0f; // degrees
 
         private static G3MagnetBootsSettings Settings => G3MagnetBootsSettings.Current;
-        private static G3MagnetBootsDifficultySettings DifficultySettings => G3MagnetBootsDifficultySettings.Current;
+        private static G3MagnetBootsConstants Constants => G3MagnetBootsConstants.Current;
 
         public KerbalEVA Kerbal { get; private set; }
         public KerbalFSM FSM { get { return Kerbal.fsm; } }
@@ -279,38 +264,30 @@ namespace G3MagnetBoots
         void SetAG(KSPActionGroup g, bool active) => VesselUtils.SetAG(vessel, g, active);
         void ToggleAG(KSPActionGroup g) => VesselUtils.ToggleAG(vessel, g);
 
-        // Call SetEngageDelay on ModuleG3VelocityMatch (separate assembly) via reflection so
-        // G3MagnetBoots has no hard compile-time dependency on G3VelocityMatch.
-        private void TrySetVelocityMatchEngageDelay(float seconds)
+        public bool IsGearOn => IsAGOn(KSPActionGroup.Gear);
+        public bool IsOnHull
         {
-            if (part == null) return;
-            foreach (PartModule pm in part.Modules)
+            get
             {
-                if (pm.GetType().Name == "ModuleG3VelocityMatch")
-                {
-                    pm.GetType().GetMethod("SetEngageDelay",
-                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Public,
-                        null, new[] { typeof(float) }, null)
-                        ?.Invoke(pm, new object[] { seconds });
-                    return;
-                }
+                if (!this.enabled) return false;
+                if (Kerbal == null || Kerbal.fsm == null) return false;
+                if (!_hullTarget.IsValid()) return false;
+
+                KFSMState current = Kerbal.fsm.CurrentState;
+
+                return
+                    current == st_idle_hull ||
+                    current == st_walk_hull ||
+                    current == st_jump_hull ||
+                    (current == Kerbal.st_playing_golf && _golfStartedFromHull) ||
+                    (current == Kerbal.st_flagAcquireHeading && _flagStartedFromHull) ||
+                    (current == Kerbal.st_flagPlant && _flagStartedFromHull) ||
+                    (current == Kerbal.st_enteringConstruction && _constructionFromHull) ||
+                    (current == Kerbal.st_exitingConstruction && _constructionFromHull) ||
+                    (current == Kerbal.st_weldAcquireHeading && _constructionFromHull) ||
+                    (current == Kerbal.st_weld && _constructionFromHull);
             }
         }
-
-        public bool IsGearOn => IsAGOn(KSPActionGroup.Gear);
-        public bool IsOnHull =>
-            this.enabled && _hullTarget.IsValid() && (
-                FSM.CurrentState == st_idle_hull ||
-                FSM.CurrentState == st_walk_hull ||
-                FSM.CurrentState == st_jump_hull ||
-                (FSM.CurrentState == Kerbal?.st_playing_golf && _golfStartedFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_flagAcquireHeading && _flagStartedFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_flagPlant && _flagStartedFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_enteringConstruction && _constructionFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_exitingConstruction && _constructionFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_weldAcquireHeading && _constructionFromHull) ||
-                (FSM.CurrentState == Kerbal?.st_weld && _constructionFromHull)
-            );
 
         public bool FlagStartedFromHull => _flagStartedFromHull;
         public bool HullTargetIsValid => _hullTarget.IsValid();
@@ -322,6 +299,7 @@ namespace G3MagnetBoots
         [KSPEvent(guiActive = true, guiName = "#autoLOC_6003095", active = false)]
         public void PlantFlagOnHull()
         {
+            if (!Settings.magbootsPlantFlagEnabled) return;
             if (Kerbal == null || !IsOnHull) return;
             Kerbal.flagItems--;
             Kerbal.fsm.RunEvent(Kerbal.On_flagPlantStart);
@@ -330,11 +308,14 @@ namespace G3MagnetBoots
         public void UpdatePlantFlagOnHullButton()
         {
             if (Kerbal == null) return;
-            Events["PlantFlagOnHull"].active = IsOnHull
+            Events["PlantFlagOnHull"].active =
+                Settings.magbootsPlantFlagEnabled
+                && IsOnHull
                 && Kerbal.vessel.state == Vessel.State.ACTIVE
                 && Kerbal.flagItems > 0
                 && !Kerbal.isRagdoll
-                && GameVariables.Instance.UnlockedEVAFlags(ScenarioUpgradeableFacilities.GetFacilityLevel(SpaceCenterFacility.AstronautComplex))
+                && GameVariables.Instance.UnlockedEVAFlags(
+                    ScenarioUpgradeableFacilities.GetFacilityLevel(SpaceCenterFacility.AstronautComplex))
                 && !Kerbal.InConstructionMode;
         }
 
@@ -364,12 +345,12 @@ namespace G3MagnetBoots
             if (IsTechUnlocked())
             {
                 this.enabled = enabled;
-                SetAG(KSPActionGroup.Gear, enabled); // sync to the EVA vessel's Gear AG
+                SetAG(KSPActionGroup.Gear, enabled);
             }
             else
             {
                 this.enabled = false;
-                SetAG(KSPActionGroup.Gear, false); // sync to the EVA vessel's Gear AG
+                SetAG(KSPActionGroup.Gear, false);
             }
         }
 
@@ -380,10 +361,8 @@ namespace G3MagnetBoots
             base.OnStart(state);
             if (!HighLogic.LoadedSceneIsFlight) return;
 
-            _lastBrakes = IsAGOn(KSPActionGroup.Brakes);
             _inLetGoCooldown = false;
 
-            HookAGBrakesButton();
             HookAGGearButton();
 
             GameEvents.onKerbalPassedOutFromGeeForce.Add(OnKerbalBlackedOut);
@@ -405,7 +384,6 @@ namespace G3MagnetBoots
             base.OnUpdate();
             UpdatePlantFlagOnHullButton();
             UpdateUI();
-            UpdateHullAnchorAGInterface();
 
             if (!IsTechUnlocked())
             {
@@ -433,7 +411,6 @@ namespace G3MagnetBoots
             try
             {
                 SetupFSM();
-                FSMDebugger.Attach(eva);
             }
             catch (Exception ex)
             {
@@ -462,7 +439,21 @@ namespace G3MagnetBoots
             st_idle_hull.OnFixedUpdate += UpdateConstructionFromHullFlag;
             st_idle_hull.OnFixedUpdate += ValidateHullAnchor;
             //st_idle_hull.OnFixedUpdate += Kerbal.CheckLadderTriggers;
-            st_idle_hull.OnLeave = _ => RemoveHullAnchor();
+            st_idle_hull.OnLeave = nextState =>
+            {
+                bool keepAnchor =
+                    nextState == st_idle_hull ||
+                    (nextState == Kerbal.st_enteringConstruction && _constructionFromHull) ||
+                    (nextState == Kerbal.st_exitingConstruction && _constructionFromHull); //||
+                    //(nextState == Kerbal.st_weldAcquireHeading && _constructionFromHull) ||
+                    //(nextState == Kerbal.st_weld && _constructionFromHull) ||
+                    //(nextState == Kerbal.st_playing_golf && _golfStartedFromHull) ||
+                    //(nextState == Kerbal.st_flagAcquireHeading && _flagStartedFromHull) ||
+                    //(nextState == Kerbal.st_flagPlant && _flagStartedFromHull);
+
+                if (!keepAnchor)
+                    RemoveHullAnchor();
+            };
             FSM.AddState(st_idle_hull);
 
             FSM.AddEvent(Kerbal.On_packToggle, st_idle_hull);
@@ -578,7 +569,6 @@ namespace G3MagnetBoots
             On_jump_hull.OnEvent += delegate
             {
                 Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_JUMP));
-                TrySetVelocityMatchEngageDelay(JETPACK_DEPLOY_DELAY_JUMP * 2f);
             };
             FSM.AddEvent(On_jump_hull, st_idle_hull, st_walk_hull);
 
@@ -673,28 +663,28 @@ namespace G3MagnetBoots
         private ConfigurableJoint _hullAnchorJoint;
         private bool ShouldUseHullAnchor()
         {
-            if (!IsBrakesOn) return false;
             if (_hullAnchorJoint != null) return false;
-            if (FSM.CurrentState != st_idle_hull) return false;
+            //if (FSM.CurrentState != st_idle_hull) return false;
             if (!_hullTarget.IsValid()) return false;
-            if (Part.rb == null || _hullTarget.rigidbody == null) return false;
+            if (Part?.rb == null || _hullTarget.rigidbody == null) return false;
 
-            if (tgtRpos != Vector3.zero) return false;
+            // check if kerbal is trying to move via inputs (zero)
+            if (tgtRpos.sqrMagnitude > VECTOR_ZERO_THRESHOLD)
+            {
+                return false;
+            }
+
             if (PartHasMovingColliderRisk(_hullTarget.part)) return false;
 
-            if (!TryGetExactPadRelativeVelocity(out Vector3 relVel, out float relN, out float relT))
-                return false;
-
-            if (relN > HULL_ANCHOR_MAX_REL_NORMAL_SPEED)
-                return false;
-
-            if (relT > HULL_ANCHOR_MAX_REL_TANGENT_SPEED)
-                return false;
-
-            float normalDelta = Vector3.Angle(_smoothedHullNormal, _hullTarget.hitNormal.normalized);
-            if (normalDelta > HULL_ANCHOR_MAX_NORMAL_DELTA)
-                return false;
-
+            // Normal stability only. Keep this loose.
+            if (_hullSmoothingValid && _hullTarget.hitNormal.sqrMagnitude > VECTOR_ZERO_THRESHOLD)
+            {
+                float normalDelta = Vector3.Angle(_smoothedHullNormal, _hullTarget.hitNormal.normalized);
+                if (normalDelta > HULL_ANCHOR_MAX_NORMAL_DELTA)
+                {
+                    return false;
+                }
+            }
             return true;
         }
 
@@ -725,7 +715,8 @@ namespace G3MagnetBoots
 
         private void TryAddHullAnchor()
         {
-
+            if (_hullAnchorJoint != null)
+                return;
 
             if (!ShouldUseHullAnchor())
             {
@@ -734,10 +725,14 @@ namespace G3MagnetBoots
             }
 
             _hullAnchorTimer += Time.fixedDeltaTime;
-            if (_hullAnchorTimer < HULL_ANCHOR_DELAY) return;
+            if (_hullAnchorTimer < HULL_ANCHOR_DELAY)
+                return;
 
+            SnapToHullPad();
             AddHullAnchor();
         }
+
+        private bool _anchorBrokenByPhysics = false;
 
         private void AddHullAnchor()
         {
@@ -749,6 +744,12 @@ namespace G3MagnetBoots
             j.connectedBody = _hullTarget.rigidbody;
             j.autoConfigureConnectedAnchor = true;
 
+            j.autoConfigureConnectedAnchor = false;
+            //Vector3 contactPointWorld = Part.rb.position - (Part.rb.rotation * (Part.rb.centerOfMass));
+            Vector3 contactPointWorld = Part.rb.position - fUp.normalized * FootHullPad;
+            j.anchor = Part.rb.transform.InverseTransformPoint(contactPointWorld);
+            j.connectedAnchor = _hullTarget.rigidbody.transform.InverseTransformPoint(contactPointWorld);
+
             j.xMotion = ConfigurableJointMotion.Locked;
             j.yMotion = ConfigurableJointMotion.Locked;
             j.zMotion = ConfigurableJointMotion.Locked;
@@ -757,11 +758,18 @@ namespace G3MagnetBoots
             j.angularYMotion = ConfigurableJointMotion.Locked;
             j.angularZMotion = ConfigurableJointMotion.Locked;
 
-            j.enableCollision = false;
-            j.breakForce = Mathf.Infinity;
-            j.breakTorque = Mathf.Infinity;
-
-            //j.projectionMode = JointProjectionMode.None;
+            j.enableCollision = true;
+            
+            if (Constants.parkingBrakeMaxG == 0)
+            {
+                j.breakForce = Mathf.Infinity;
+                j.breakTorque = Mathf.Infinity;
+            }
+            else
+            {
+                j.breakForce = Part.rb.mass * Constants.parkingBrakeMaxG * 9.81f; // F = m * a; a = maxG * gravity
+                j.breakTorque = j.breakForce;
+            }
 
             j.projectionMode = JointProjectionMode.PositionAndRotation;
             j.projectionDistance = 0.02f;
@@ -772,8 +780,17 @@ namespace G3MagnetBoots
 
             _hullAnchorJoint = j;
 
-            Logger.Debug($"[Anchor] Created joint with break force {_hullAnchorJoint.breakForce} and break torque {_hullAnchorJoint.breakTorque}");
+            Logger.Debug($"Parking brake joint created with break force {_hullAnchorJoint.breakForce} and break torque {_hullAnchorJoint.breakTorque}");
+
+            _anchorBrokenByPhysics = false;
+            var detector = Part.rb.gameObject.AddComponent<HullAnchorBreakDetector>();
+            detector.OnBroken = () =>
+            {
+                _anchorBrokenByPhysics = true;
+                _hullAnchorJoint = null;
+            };
         }
+
 
         private void SnapToHullPad()
         {
@@ -824,18 +841,29 @@ namespace G3MagnetBoots
 
         private void RemoveHullAnchor()
         {
-            if (_hullAnchorJoint != null)
+            _anchorBrokenByPhysics = false;
+            if (Part?.rb != null)
             {
-                Logger.Debug("[Anchor] Removed joint");
-                UnityEngine.Object.Destroy(_hullAnchorJoint);
+                var detector = Part.rb.gameObject.GetComponent<HullAnchorBreakDetector>();
+                if (detector != null) Destroy(detector);
             }
-
+            if (_hullAnchorJoint != null)
+                Destroy(_hullAnchorJoint);
             _hullAnchorJoint = null;
             _hullAnchorTimer = 0f;
         }
 
         private void ValidateHullAnchor()
         {
+            if (_anchorBrokenByPhysics)
+            {
+                PostAnchorBrakeMsg();
+                _anchorBrokenByPhysics = false;
+                _hullAnchorTimer = 0f;
+                return;
+            }
+
+
             if (_hullAnchorJoint == null) return;
 
             if (!_hullTarget.IsValid())
@@ -865,7 +893,7 @@ namespace G3MagnetBoots
 
             if (!_hullTarget.IsValid()) return false;
 
-            if (DifficultySettings.magbootsRequireHighAltitudeEnabled && !IsAboveHighAltitude()) return false;
+            if (Settings.magbootsRequireMicrogravity && !IsAboveHighAltitude()) return false;
             if (HullTargeting.GetRelativeSpeedToHullPoint(_hullTarget, base.part) > Kerbal.stumbleThreshold) return false;
 
             // Don't attach while commanding upward jetpack thrust (relative to Kerbal up)
@@ -889,12 +917,11 @@ namespace G3MagnetBoots
             RemoveHullAnchor();
         }
 
-
         protected virtual bool ShouldExitHullIdle()
         {
             if (!_hullTarget.IsValid()) { ClearHullTarget(); return true; }
 
-            if (DifficultySettings.magbootsRequireHighAltitudeEnabled && !IsAboveHighAltitude()) { ClearHullTarget(); return true; }
+            if (Settings.magbootsRequireMicrogravity && !IsAboveHighAltitude()) { ClearHullTarget(); return true; }
             if (HullTargeting.GetRelativeSpeedToHullPoint(_hullTarget, base.part) > Kerbal.stumbleThreshold) { ClearHullTarget(); return true; }
 
             return false;
@@ -902,7 +929,7 @@ namespace G3MagnetBoots
 
         protected virtual void idle_hull_OnEnter(KFSMState s)
         {
-            Kerbal.Events["PlantFlag"].active = false; //DifficultySettings.magbootsPlantFlagEnabled;
+            Kerbal.Events["PlantFlag"].active = false;
             tgtSpeed = 0f;
             currentSpd = 0f;
             KerbalEVAAccess.KerbalAnchorTimeCounter(Kerbal) = 0f;
@@ -912,7 +939,7 @@ namespace G3MagnetBoots
             // Allow repacking chute while on hull
             if (KerbalEVAAccess.EvaChute(Kerbal) != null)
             {
-                KerbalEVAAccess.EvaChute(Kerbal).AllowRepack(allowRepack: DifficultySettings.magbootsRepackChuteEnabled);
+                KerbalEVAAccess.EvaChute(Kerbal).AllowRepack(allowRepack: Settings.magbootsRepackChuteEnabled);
             }
 
             _animation.CrossFade(Kerbal.Animations.idle, ANIMATION_CROSSFADE_TIME_LONG, PlayMode.StopSameLayer);
@@ -1007,9 +1034,11 @@ namespace G3MagnetBoots
         {
             GroundSpherecastRadius += LADDER_LETGO_SPHERECAST_RADIUS_BOOST;
             GroundSpherecastLength += LADDER_LETGO_SPHERECAST_LENGTH_BOOST;
+            Logger.Debug($"Ladder let-go: boosted spherecast radius to {GroundSpherecastRadius} and length to {GroundSpherecastLength} for {LADDER_LETGO_SPHERECAST_BOOST_TIME} seconds");
             yield return new WaitForSeconds(LADDER_LETGO_SPHERECAST_BOOST_TIME);
             GroundSpherecastRadius -= LADDER_LETGO_SPHERECAST_RADIUS_BOOST;
             GroundSpherecastLength -= LADDER_LETGO_SPHERECAST_LENGTH_BOOST;
+            Logger.Debug($"Ladder let-go: reverted spherecast radius to {GroundSpherecastRadius} and length to {GroundSpherecastLength}");
         }
 
         // Helper: zero Kerbal movement state when triggering EVA science from a hull state.
@@ -1038,6 +1067,7 @@ namespace G3MagnetBoots
             UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
+            ValidateHullAnchor();
         }
 
         private void On_Golf_Complete_Hull_Redirect()
@@ -1081,7 +1111,7 @@ namespace G3MagnetBoots
             UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
-
+            ValidateHullAnchor();
             KerbalEVAAccess.CmdRot(Kerbal) = Vector3.zero;
             updateRagdollVelocities();
         }
@@ -1166,7 +1196,7 @@ namespace G3MagnetBoots
             UpdateSmoothedHullSurface();
             OrientToSurfaceNormal();
             UpdateMovementOnVessel();
-
+            ValidateHullAnchor();
             KerbalEVAAccess.CmdRot(Kerbal) = Vector3.zero;
             updateRagdollVelocities();
         }
@@ -1236,10 +1266,9 @@ namespace G3MagnetBoots
             ClearHullTarget();
             RemoveHullAnchor();
             ApplyLetGoImpulse();
-            Kerbal.Events["PlantFlag"].active = true;
+            Kerbal.Events["PlantFlag"].active = false;
             Kerbal.StartCoroutine(On_letGo_Coroutine(LET_GO_COOLDOWN_TIME));
             Kerbal.StartCoroutine(AutoDeployJetpack_Coroutine(JETPACK_DEPLOY_DELAY_LETGO));
-            TrySetVelocityMatchEngageDelay(JETPACK_DEPLOY_DELAY_LETGO);
         }
 
         private IEnumerator On_letGo_Coroutine(float delay = 2.0f)
@@ -1457,7 +1486,7 @@ namespace G3MagnetBoots
             // Negative = pull inward toward hull.
             float vnTarget = padError / dt;
 
-            float maxDv = Settings.magbootsClampForce * dt;
+            float maxDv = Constants.magbootsClampForce * dt;
             float dv = Mathf.Clamp(vnTarget - vn, -maxDv, maxDv);
 
             float vnNew = vn + dv;
@@ -1468,9 +1497,9 @@ namespace G3MagnetBoots
             Vector3 slip = vRelT - desiredTangentVel;
             float slipMag = slip.magnitude;
 
-            if (slipMag > VECTOR_ZERO_THRESHOLD_LOOSE)
+            if (slipMag > VECTOR_ZERO_THRESHOLD)
             {
-                float reduce = Mathf.Min(slipMag, Settings.magbootsStaticFrictionForce * dt);
+                float reduce = Mathf.Min(slipMag, 16 * dt);
                 Vector3 slipNew = slip - slip.normalized * reduce;
                 Vector3 vRelTNew = desiredTangentVel + slipNew;
 
@@ -1673,8 +1702,8 @@ namespace G3MagnetBoots
         }
 
 
-        private const float FUTURE_LOOKAHEAD_MIN = 0.30f;
-        private const float FUTURE_LOOKAHEAD_MAX = 0.55f;
+        private const float FUTURE_LOOKAHEAD_MIN = 0.45f;
+        private const float FUTURE_LOOKAHEAD_MAX = 0.60f;
         private const float FUTURE_CAST_UP_BIAS = 0.30f;
         private const float FUTURE_CAST_LENGTH = 0.60f;
         private const float FUTURE_FOOT_SPHERE_RADIUS = 0.13f;
@@ -1683,11 +1712,9 @@ namespace G3MagnetBoots
         private const float GAP_REJECT_DEPTH = 0.40f;
         private const float FUTURE_SMOOTH_TAU = 0.07f;
 
-        // Helmet cast
-        private const float HELMET_HEIGHT = 1.0f;  // above footPivot
-        private const float HELMET_SPHERE_RADIUS = 0.35f;  // KSP1 helmet is wider than body
-        private const float HELMET_FORWARD_MARGIN = 0.10f;  // cast slightly past lookahead
-        private const float HELMET_FACING_THRESHOLD = 0.25f;  // wall normal must face this much toward kerbal
+        private const float HELMET_HEIGHT = 0.41f;
+        private const float HELMET_SPHERE_RADIUS = 0.6f;
+        private const float HELMET_FORWARD_MARGIN = 0.30f;
 
         private bool TryGetFutureNormal(
             float lookaheadDist,
@@ -1748,30 +1775,28 @@ namespace G3MagnetBoots
                     HullTargeting.HullMask, QueryTriggerInteraction.Ignore)
                 && IsValidHullPart(helmetRayHit.collider))
             {
-                // Wall must be facing us — backfaces and grazing hits are noise
+                // Wall must be vaugely facing the player to be relevant — avoid picking up surfaces alongside the walkable floor
                 float facingDot = Vector3.Dot(helmetRayHit.normal, -moveDir);
-                if (facingDot >= HELMET_FACING_THRESHOLD)
+                if (facingDot >= -.25f) 
                 {
                     Vector3 toHelmetHit = helmetRayHit.point - footPos;
                     float hUpComp = Vector3.Dot(toHelmetHit, _smoothedHullNormal);
                     float hDistAhead = Vector3.ProjectOnPlane(toHelmetHit, _smoothedHullNormal).magnitude;
 
-                    // Only treat as a walk-onto candidate if it's at or below current surface plane
-                    // (a wall rising up from the hull face, not something floating above)
-                    if (hUpComp <= FUTURE_CONCAVE_CUTOFF)
-                    {
+                    // Only if below current plane
+                    //if (hUpComp <= FUTURE_CONCAVE_CUTOFF)
+                    //{
                         helmetNormal = helmetRayHit.normal.normalized;
                         helmetUpComp = hUpComp;
                         helmetDistAhead = hDistAhead;
                         helmetHit = true;
-                    }
+                    //}
                 }
             }
 
-            // --- Pick winner ---
             // Helmet cast wins if foot cast missed entirely, or helmet is closer (head hits first)
             // Foot cast wins for floor-to-floor transitions where the helmet misses the new surface
-            if (helmetHit && (!footHit || helmetDistAhead <= footDistAhead))
+            if (helmetHit) //&& (!footHit || helmetDistAhead <= footDistAhead))
             {
                 futureNormal = helmetNormal;
                 upComponent = helmetUpComp;
@@ -1797,7 +1822,7 @@ namespace G3MagnetBoots
             Part p = col.GetComponentInParent<Part>();
             if (p == null || p == Kerbal.part) return false;
             if (p.FindModuleImplementing<ModuleG3NoAttach>() != null) return false;
-            if (!G3MagnetBootsDifficultySettings.Current.magbootsAsteroidsEnabled &&
+            if (!Settings.magbootsAsteroidsEnabled &&
                 p.FindModuleImplementing<ModuleAsteroid>() != null) return false;
             return true;
         }
@@ -1839,15 +1864,12 @@ namespace G3MagnetBoots
 
             Vector3 thrustDir = -relVel.normalized;
 
-            // Same basic scale logic as your current implementation.
             float exactScale =
                 (relSpeed * Mathf.Max(rb.mass, 0.001f)) /
                 (Kerbal.linPower * Time.fixedDeltaTime);
 
-            float thrustScale = Mathf.Min(thrustPct, exactScale) * 0.5f;
+            float thrustScale = Mathf.Min(thrustPct, exactScale) * 0.8f;
 
-            // KerbalEVA.UpdatePackLinear multiplies packTgtRPos by thrustPct,
-            // so pre-divide to get the desired actual thrust scale.
             return thrustDir * (thrustScale / thrustPct);
         }
 
@@ -1874,10 +1896,6 @@ namespace G3MagnetBoots
 
             return targetVessel;
         }
-
-
-
-
 
     }
 

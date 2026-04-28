@@ -4,7 +4,7 @@ using UnityEngine;
 
 namespace G3MagnetBoots
 {
-    // Safety net: block stock Dzhanibekov(Callback) experiment if ever called while on a hull
+    // block stock wingnut experiment while on a hull (shouldn't be possible but just in case)
     [HarmonyPatch(typeof(KerbalEVA), "Dzhanibekov", new[] { typeof(Callback) })]
     internal static class Patch_KerbalEVA_Dzhanibekov
     {
@@ -17,7 +17,6 @@ namespace G3MagnetBoots
         }
     }
 
-    // Gate hull golf EVASITUATION (priority=0, situationMask=48, PlayGolf) so it only wins the ValidEVASituation selection when the kerbal is on a hull. When not on hull, the situation is temporarily removed from the list before ValidEVASituation runs so stock Dzhanibekov (priority=1, situationMask=48) wins as normal, then restored immediately after.
     [HarmonyPatch(typeof(ModuleScienceExperiment), "ValidEVASituation")]
     internal static class Patch_ModuleScienceExperiment_ValidEVASituation
     {
@@ -34,7 +33,7 @@ namespace G3MagnetBoots
             var situations = __instance.evaSituations;
             if (situations == null) return;
 
-            // Identify hull golf by PlayGolf action restricted to space situations. The stock ground golf also uses PlayGolf but has situationMask = 1 (SrfLanded).
+            // Identify hull golf by PlayGolf action restricted to space. Stock golf uses situationMask = 1.
             _removed = situations.Find(s => s.KerbalAction == "PlayGolf" && (s.situationMask & 48u) != 0);
             if (_removed != null) situations.Remove(_removed);
         }
