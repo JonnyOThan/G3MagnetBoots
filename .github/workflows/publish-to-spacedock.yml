@@ -1,0 +1,14 @@
+name: publish-to-spacedock
+
+on:
+  release:
+    types: [released]
+
+jobs:
+  publish-to-spacedock:
+    uses: KSPModdingLibs/KSPBuildTools/.github/workflows/publish-to-spacedock.yml@1.1.1
+    with:
+      spacedock-username: misterblusky
+      mod-id: 4069
+    secrets:
+      spacedock-password: ${{ secrets.SPACEDOCK_PASSWORD }}
