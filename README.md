@@ -1,6 +1,6 @@
-# G3 Magnet Boots
+# G3MagnetBoots
 
-**by MisterBluSky** — a KSP 1 mod that lets Kerbals magnetically attach to vessel hulls while on EVA.
+**by MisterBluSky** — a KSP1 mod that lets Kerbals magnetically attach to vessel hulls and do work while on EVA.
 
 [![License: CC BY-NC-ND 4.0](https://img.shields.io/badge/License-CC%20BY--NC--ND%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-nd/4.0/)
 
@@ -10,7 +10,7 @@ This work is licensed under <a href="https://creativecommons.org/licenses/by-nc-
 
 ## Overview
 
-G3 Magnet Boots adds EVA magnetic boots to every Kerbal. When a Kerbal floats within range of a vessel's hull in microgravity, the boots automatically engage and snap the Kerbal to the surface. Once attached, the Kerbal can walk around the hull, stand idle with a physics-locking parking brake joint, enter EVA construction mode, perform hull welds, and even plant flags — all while the vessel tumbles, rotates, or accelerates beneath their feet.
+G3 Magnet Boots adds EVA magnetic boots to every Kerbal. When a Kerbal floats within range of a vessel's collider, the boots automatically engage and snap the Kerbal to the surface. Once attached, the Kerbal can walk around the hull, stand idle with a physics-locking parking brake joint, enter EVA construction mode, weld, and even plant flags all while the vessel tumbles, rotates, or accelerates beneath them.
 
 The mod is built entirely with Harmony patches and KSP's existing FSM; no new animations or models are required.
 
@@ -19,31 +19,32 @@ The mod is built entirely with Harmony patches and KSP's existing FSM; no new an
 ## Features
 
 ### Magnetic Attachment
-- Kerbals automatically attach to nearby vessel hull surfaces in microgravity (default: above 3 500 m altitude and terrain height).
-- A multi-hit spherecast with origin-correction finds the best valid surface hit beneath the Kerbal's feet each physics step.
-- Smooth surface normal tracking using an angle-adaptive exponential moving average keeps orientation stable over curved or edge geometry. A forward-cast anticipation system gently blends the normal toward the upcoming surface while walking, reducing jolts when rounding vessel edges.
+- Kerbals automatically attach to nearby vessel hull surfaces.
+- Magnet boots now work in atmosphere and on planets/moons, this can be configured to only allow on micro-gravity (meaning above terrain by >3500m).
+- A multi-hit spherecast finds the best valid surface hit beneath the Kerbal's feet each physics step.
+- Smooth surface normal tracking using angle-adaptive smoothing keeps orientation stable over curves or edges. A future-cast system gently blends the normal toward upcoming surfaces while walking, reducing jolts when rounding vessel edges.
 - Velocity matching continuously corrects the Kerbal's velocity to track the hull's point velocity at the contact point, so the Kerbal stays planted even when the vessel rotates or translates.
 
-### Parking Brake Joint
-When the Kerbal stands still on a hull for a brief moment, a rigid `ConfigurableJoint` is created between the Kerbal and the hull rigidbody, locking all six degrees of freedom. This eliminates slow drift when idling. The joint breaks automatically on movement, jump, or manual detach. A configurable G-load limit can be set to make the joint breakable under high acceleration (see Settings).
+### Parking Brake Hull Anchor Joint
+When the Kerbal stands still on a hull, after a brief moment a rigid `ConfigurableJoint` is created between the Kerbal and the hull rigidbody, locking them in place relative. This eliminates slow drift, improves phantom physics forces, and allows more extreme manuevers without flying off. The joint breaks automatically on movement, jump, or manual detach. G-load limit can be set so it breaks under high acceleration, but default it is unbreakable. Kerbals who go unconcious due to over-Gee will detach no matter the setting.
 
 ### Walking & Jumping
-- Full walking on curved hull surfaces with surface-relative directional controls.
-- RCS pack thrust is restricted to the vertical axis while on hull to prevent accidental lateral flight.
-- Jumping off the hull automatically enables the jetpack (configurable) to catch the Kerbal after a short delay, mimicking the stock ladder-jump behaviour.
+- Full walking on arbitrary vessel colliders with surface-relative controls.
+- RCS pack thrust is restricted to the kerbals up-axis while on hull to allow jetting away or pushing downwards.
+- QoL: Jumping off the hull automatically enables the jetpack (optional) to catch you after a short delay.
 
-### LOCKED Camera Mode Boom
-When the flight camera is in `LOCKED` mode and a Kerbal is on a hull, a custom camera controller takes over:
-- A camera boom arm is attached to the Kerbal with configurable pitch, heading, and distance driven by stock camera input.
-- The boom world-frame is smoothed each frame using an angle-adaptive EMA — heavy damping for micro-jitter, fast response for real rotations, hard snap above 175°.
-- Smooth cross-fade transitions (0.35 s) blend between the previous camera position and the new boom position when engaging or disengaging.
-- Releases cleanly to stock camera when leaving the hull or switching modes.
+### LOCKED EVA Camera Mode w/ Stabilized Boom
+Use the new camera mode when attached to a hull. Flight camera `LOCKED` mode uses a custom camera controller:
+- A simulated camera boom arm is attached to the Kerbal's body with stock camera controls.
+- Camera stabilized reference-frame is smoothed each frame using an angle-adaptive EMA — heavy damping for Kraken jitter, snaps above 175°.
+- Smooth cross-fade transitions to blend between previous camera position and boom position when to hopefully feel stock-alike.
+- Releases to stock camera modes when leaving the hull or switching modes.
 
 ### EVA Construction Mode on Hull
-Kerbals can enter and exit EVA construction mode while magnetically attached without dismounting. The FSM is patched to redirect back to the hull-idle state on construction exit. Stock locomotion events are suppressed during the transition animations to prevent erratic movement.
+Kerbals can use now EVA construction mode while attached. KerbalFSM is patched to redirect back to the hull-idle state on construction exit. Stock movement is suppressed during the animation to prevent weird animation issues.
 
 ### Hull Welding on Hull
-Kerbals can initiate a weld operation directly from the hull. The attachment state is maintained for the full duration of the weld and the Kerbal returns to the hull after the weld completes.
+Kerbals now enter the welding animation directly when on a hull and return to idle safely after the weld completes.
 
 ### Flag Planting on Vessel Hulls *(experimental, opt-in)*
 With the setting enabled, a right-click menu button appears on the Kerbal when on a hull with a flag available. The planted flag's physics joint is re-wired to connect to the hull rigidbody, making the flag move with the vessel. **Back up your save before using this feature.**
@@ -58,7 +59,7 @@ Kerbals can repack their EVA parachute while attached to a hull (configurable).
 An optional safety bypass allows Kerbals to remove their helmets in vacuum — useful for roleplay or in-game photography.
 
 ### Kerbalism Compatibility
-A bundled Module Manager patch adds an EC drain (~0.006 EC/s) to the boots when Kerbalism is installed.
+A bundled Module Manager patch adds an EC drain (~0.006 EC/s) to the boots while attached with Kerbalism is installed.
 
 ---
 
@@ -66,9 +67,9 @@ A bundled Module Manager patch adds an EC drain (~0.006 EC/s) to the boots when 
 
 | Dependency | Notes |
 |---|---|
-| **Kerbal Space Program 1.x** | Tested on KSP 1.12.x |
+
 | **Module Manager** | Required for the KerbalEVA and blacklist patches |
-| **0Harmony** | Bundled in `GameData/G3MagnetBoots/Plugins/` |
+| **0Harmony** ||
 
 ---
 
@@ -85,9 +86,7 @@ GameData/
     Flags/
     Patches/
     Plugins/
-      0Harmony.dll
       G3MagnetBoots.dll
-      System.Core.dll
 ```
 
 ---
