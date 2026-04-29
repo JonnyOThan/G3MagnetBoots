@@ -1,5 +1,5 @@
 <Project Sdk="Microsoft.NET.Sdk">
-  <Include Project="G3MagnetBoots.version.props" />
+  <Import Project="G3MagnetBoots.version.props" />
   <PropertyGroup>
     <LangVersion>9.0</LangVersion>
     <TargetFramework>net4.8</TargetFramework>
