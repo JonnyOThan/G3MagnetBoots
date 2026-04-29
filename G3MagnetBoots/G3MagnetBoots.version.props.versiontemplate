@@ -1,0 +1,5 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <Version>@VERSION_MAJOR@.@VERSION_MINOR@.@VERSION_PATCH@</Version>
+  </PropertyGroup>
+</Project>
